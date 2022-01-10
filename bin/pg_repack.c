@@ -228,6 +228,7 @@ static bool advisory_lock(PGconn *conn, const char *relid);
 static bool lock_exclusive(PGconn *conn, const char *relid, const char *lock_query, bool start_xact);
 static bool kill_ddl(PGconn *conn, Oid relid, bool terminate);
 static bool lock_access_share(PGconn *conn, Oid relid, const char *target_name);
+static bool apply_alter_statement(PGconn *conn, Oid relid, const char *alter_sql);
 
 #define SQLSTATE_INVALID_SCHEMA_NAME	"3F000"
 #define SQLSTATE_UNDEFINED_FUNCTION		"42883"
@@ -242,6 +243,7 @@ static bool				analyze = true;
 static bool				alldb = false;
 static bool				noorder = false;
 static SimpleStringList	parent_table_list = {NULL, NULL};
+static SimpleStringList	alter_list = {NULL, NULL};
 static SimpleStringList	table_list = {NULL, NULL};
 static SimpleStringList	schema_list = {NULL, NULL};
 static char				*orderby = NULL;
@@ -251,7 +253,7 @@ static SimpleStringList	r_index = {NULL, NULL};
 static bool				only_indexes = false;
 static int				wait_timeout = 60;	/* in seconds */
 static int				jobs = 0;	/* number of concurrent worker conns. */
-static bool				dryrun = false;
+static bool				execute_allowed = false;
 static unsigned int		temp_obj_num = 0; /* temporary objects counter */
 static bool				no_kill_backend = false; /* abandon when timed-out */
 static bool				no_superuser_check = false;
@@ -268,23 +270,14 @@ utoa(unsigned int value, char *buffer)
 
 static pgut_option options[] =
 {
-	{ 'b', 'a', "all", &alldb },
 	{ 'l', 't', "table", &table_list },
-	{ 'l', 'I', "parent-table", &parent_table_list },
-	{ 'l', 'c', "schema", &schema_list },
-	{ 'b', 'n', "no-order", &noorder },
-	{ 'b', 'N', "dry-run", &dryrun },
-	{ 's', 'o', "order-by", &orderby },
-	{ 's', 's', "tablespace", &tablespace },
-	{ 'b', 'S', "moveidx", &moveidx },
-	{ 'l', 'i', "index", &r_index },
-	{ 'b', 'x', "only-indexes", &only_indexes },
+	{ 'l', 'a', "alter", &alter_list },
+	{ 'l', 's', "schema", &schema_list },
+	{ 'b', 'N', "execute", &execute_allowed },
 	{ 'i', 'T', "wait-timeout", &wait_timeout },
-	{ 'B', 'Z', "no-analyze", &analyze },
 	{ 'i', 'j', "jobs", &jobs },
 	{ 'b', 'D', "no-kill-backend", &no_kill_backend },
 	{ 'b', 'k', "no-superuser-check", &no_superuser_check },
-	{ 'l', 'C', "exclude-extension", &exclude_extension_list },
 	{ 0 },
 };
 
@@ -305,91 +298,15 @@ main(int argc, char *argv[])
 
 	check_tablespace();
 
-	if (dryrun)
-		elog(INFO, "Dry run enabled, not executing repack");
+	if (!alter_list.head)
+		elog(INFO, "No alter statements, not executing migration");
 
-	if (r_index.head || only_indexes)
-	{
-		if (r_index.head && table_list.head)
-			ereport(ERROR, (errcode(EINVAL),
-				errmsg("cannot specify --index (-i) and --table (-t)")));
-		if (r_index.head && parent_table_list.head)
-			ereport(ERROR, (errcode(EINVAL),
-				errmsg("cannot specify --index (-i) and --parent-table (-I)")));
-		else if (r_index.head && only_indexes)
-			ereport(ERROR, (errcode(EINVAL),
-				errmsg("cannot specify --index (-i) and --only-indexes (-x)")));
-		else if (r_index.head && exclude_extension_list.head)
-			ereport(ERROR, (errcode(EINVAL),
-				errmsg("cannot specify --index (-i) and --exclude-extension (-C)")));
-		else if (only_indexes && !(table_list.head || parent_table_list.head))
-			ereport(ERROR, (errcode(EINVAL),
-				errmsg("cannot repack all indexes of database, specify the table(s)"
-					   "via --table (-t) or --parent-table (-I)")));
-		else if (only_indexes && exclude_extension_list.head)
-			ereport(ERROR, (errcode(EINVAL),
-				errmsg("cannot specify --only-indexes (-x) and --exclude-extension (-C)")));
-		else if (alldb)
-			ereport(ERROR, (errcode(EINVAL),
-				errmsg("cannot repack specific index(es) in all databases")));
-		else
-		{
-			if (orderby)
-				ereport(WARNING, (errcode(EINVAL),
-					errmsg("option -o (--order-by) has no effect while repacking indexes")));
-			else if (noorder)
-				ereport(WARNING, (errcode(EINVAL),
-					errmsg("option -n (--no-order) has no effect while repacking indexes")));
-			else if (!analyze)
-				ereport(WARNING, (errcode(EINVAL),
-					errmsg("ANALYZE is not performed after repacking indexes, -z (--no-analyze) has no effect")));
-			else if (jobs)
-				ereport(WARNING, (errcode(EINVAL),
-					errmsg("option -j (--jobs) has no effect, repacking indexes does not use parallel jobs")));
-			if (!repack_all_indexes(errbuf, sizeof(errbuf)))
-				ereport(ERROR,
-					(errcode(ERROR), errmsg("%s", errbuf)));
-		}
-	}
-	else
-	{
-		if (schema_list.head && (table_list.head || parent_table_list.head))
-			ereport(ERROR,
-				(errcode(EINVAL),
-				 errmsg("cannot repack specific table(s) in schema, use schema.table notation instead")));
+	if (!execute_allowed)
+		elog(INFO, "Dry run enabled, not executing migration, run with --execute to process.");
 
-		if (exclude_extension_list.head && table_list.head)
-			ereport(ERROR,
-				(errcode(EINVAL),
-				 errmsg("cannot specify --table (-t) and --exclude-extension (-C)")));
-
-		if (exclude_extension_list.head && parent_table_list.head)
-			ereport(ERROR,
-				(errcode(EINVAL),
-				 errmsg("cannot specify --parent-table (-I) and --exclude-extension (-C)")));
-
-		if (noorder)
-			orderby = "";
-
-		if (alldb)
-		{
-			if (table_list.head || parent_table_list.head)
-				ereport(ERROR,
-					(errcode(EINVAL),
-					 errmsg("cannot repack specific table(s) in all databases")));
-			if (schema_list.head)
-				ereport(ERROR,
-					(errcode(EINVAL),
-					 errmsg("cannot repack specific schema(s) in all databases")));
-			repack_all_databases(orderby);
-		}
-		else
-		{
-			if (!repack_one_database(orderby, errbuf, sizeof(errbuf)))
-				ereport(ERROR,
-					(errcode(ERROR), errmsg("%s failed with error: %s", PROGRAM_NAME, errbuf)));
-		}
-	}
+	if (!repack_one_database(orderby, errbuf, sizeof(errbuf)))
+		ereport(ERROR,
+			(errcode(ERROR), errmsg("%s failed with error: %s", PROGRAM_NAME, errbuf)));
 
 	return 0;
 }
@@ -692,7 +609,7 @@ repack_all_databases(const char *orderby)
 		dbname = PQgetvalue(result, i, 0);
 
 		elog(INFO, "repacking database \"%s\"", dbname);
-		if (!dryrun)
+		if (execute_allowed)
 		{
 			ret = repack_one_database(orderby, errbuf, sizeof(errbuf));
 			if (!ret)
@@ -832,27 +749,27 @@ repack_one_database(const char *orderby, char *errbuf, size_t errsize)
 		appendStringInfoString(&sql, "pkid IS NOT NULL");
 	}
 
-	/* Exclude tables which belong to extensions */
-	if (exclude_extension_list.head)
-	{
-		appendStringInfoString(&sql, " AND t.relid NOT IN"
-									 "  (SELECT d.objid::regclass"
-									 "   FROM pg_depend d JOIN pg_extension e"
-									 "   ON d.refobjid = e.oid"
-									 "   WHERE d.classid = 'pg_class'::regclass AND (");
+	// /* Exclude tables which belong to extensions */
+	// if (exclude_extension_list.head)
+	// {
+	// 	appendStringInfoString(&sql, " AND t.relid NOT IN"
+	// 								 "  (SELECT d.objid::regclass"
+	// 								 "   FROM pg_depend d JOIN pg_extension e"
+	// 								 "   ON d.refobjid = e.oid"
+	// 								 "   WHERE d.classid = 'pg_class'::regclass AND (");
 
-		/* List all excluded extensions */
-		for (cell = exclude_extension_list.head; cell; cell = cell->next)
-		{
-			appendStringInfo(&sql, "e.extname = $%d", iparam + 1);
-			params[iparam++] = cell->val;
+	// 	/* List all excluded extensions */
+	// 	for (cell = exclude_extension_list.head; cell; cell = cell->next)
+	// 	{
+	// 		appendStringInfo(&sql, "e.extname = $%d", iparam + 1);
+	// 		params[iparam++] = cell->val;
 
-			appendStringInfoString(&sql, cell->next ? " OR " : ")");
-		}
+	// 		appendStringInfoString(&sql, cell->next ? " OR " : ")");
+	// 	}
 
-		/* Close subquery */
-		appendStringInfoString(&sql, ")");
-	}
+	// 	/* Close subquery */
+	// 	appendStringInfoString(&sql, ")");
+	// }
 
 	/* Ensure the regression tests get a consistent ordering of tables */
 	appendStringInfoString(&sql, " ORDER BY t.relname, t.schemaname");
@@ -1245,7 +1162,7 @@ repack_one_table(repack_table *table, const char *orderby)
 
 	initStringInfo(&sql);
 
-	elog(INFO, "repacking table \"%s\"", table->target_name);
+	elog(INFO, "migrating table \"%s\"", table->target_name);
 
 	elog(DEBUG2, "---- repack_one_table ----");
 	elog(DEBUG2, "target_name       : %s", table->target_name);
@@ -1271,7 +1188,7 @@ repack_one_table(repack_table *table, const char *orderby)
 	elog(DEBUG2, "sql_update        : %s", table->sql_update);
 	elog(DEBUG2, "sql_pop           : %s", table->sql_pop);
 
-	if (dryrun)
+	if (!execute_allowed)
 		return;
 
 	/* push repack_cleanup_callback() on stack to clean temporary objects */
@@ -1280,7 +1197,7 @@ repack_one_table(repack_table *table, const char *orderby)
 	/*
 	 * 1. Setup advisory lock and trigger on main table.
 	 */
-	elog(DEBUG2, "---- setup ----");
+	elog(DEBUG2, "---- setup triggers ----");
 
 	params[0] = utoa(table->target_oid, buffer);
 
@@ -1466,7 +1383,7 @@ repack_one_table(repack_table *table, const char *orderby)
 	}
 
 	/*
-	 * 2. Copy tuples into temp table.
+	 * 2. Copy tuples into temp log table.
 	 */
 	elog(DEBUG2, "---- copy tuples ----");
 
@@ -1512,14 +1429,26 @@ repack_one_table(repack_table *table, const char *orderby)
 		goto cleanup;
 
 	/*
+	 * Create the new table and apply alter statement
+	 */
+	elog(DEBUG2, "---- create temp table ----");
+	command(table->create_table, 0, NULL);
+
+	if (!(apply_alter_statement(connection, table->target_oid, alter_list.head->val)))
+		goto cleanup;
+
+	/*
 	 * Before copying data to the target table, we need to set the column storage
 	 * type if its storage type has been changed from the type default.
 	 */
-	command(table->create_table, 0, NULL);
 	if (table->alter_col_storage)
 		command(table->alter_col_storage, 0, NULL);
+
+
+	elog(DEBUG2, "---- copy data ----");
 	command(table->copy_data, 0, NULL);
 	temp_obj_num++;
+
 	printfStringInfo(&sql, "SELECT repack.disable_autovacuum('repack.table_%u')", table->target_oid);
 	if (table->drop_columns)
 		command(table->drop_columns, 0, NULL);
@@ -1529,10 +1458,11 @@ repack_one_table(repack_table *table, const char *orderby)
 	/*
 	 * 3. Create indexes on temp table.
 	 */
+	elog(DEBUG2, "---- create indexes on temp table ----");
 	if (!rebuild_indexes(table))
 		goto cleanup;
 
-	/* don't clear indexres until after rebuild_indexes or bad things happen */
+	/* don't clear indexes until after rebuild_indexes or bad things happen */
 	CLEARPGRES(indexres);
 	CLEARPGRES(res);
 
@@ -1540,6 +1470,7 @@ repack_one_table(repack_table *table, const char *orderby)
 	 * 4. Apply log to temp table until no tuples are left in the log
 	 * and all of the old transactions are finished.
 	 */
+	elog(DEBUG2, "---- apply logs to temp table ----");
 	for (;;)
 	{
 		num = apply_log(connection, table, APPLY_COUNT);
@@ -1602,8 +1533,32 @@ repack_one_table(repack_table *table, const char *orderby)
 	}
 
 	apply_log(conn2, table, 0);
-	params[0] = utoa(table->target_oid, buffer);
-	pgut_command(conn2, "SELECT repack.repack_swap($1)", 1, params);
+
+	char *tmp_target_name = NULL;
+	tmp_target_name = strdup(table->target_name);
+	char *schema = strtok(tmp_target_name, ".");
+	char *table_without_namespace = strtok(NULL, ".");
+
+	resetStringInfo(&sql);
+	printfStringInfo(&sql, "ALTER TABLE %s RENAME TO %s_pre_migrate_%u", table->target_name, table_without_namespace, table->target_oid);
+	elog(DEBUG2, "--- %s", sql.data);
+	pgut_command(conn2, sql.data, 0, NULL);
+
+	resetStringInfo(&sql);
+	printfStringInfo(&sql, "ALTER TABLE repack.table_%u RENAME TO %s", table->target_oid, table_without_namespace);
+	elog(DEBUG2, "--- %s", sql.data);
+	pgut_command(conn2, sql.data, 0, NULL);
+
+	resetStringInfo(&sql);
+	printfStringInfo(&sql, "ALTER TABLE repack.%s SET SCHEMA %s", table_without_namespace, schema);
+	elog(DEBUG2, "--- %s", sql.data);
+	pgut_command(conn2, sql.data, 0, NULL);
+
+	// resetStringInfo(&sql);
+	// printfStringInfo(&sql, "DROP TABLE %s_pre_migrate_%u", table->target_name, table->target_oid);
+	// elog(DEBUG2, "--- %s", sql.data);
+	// pgut_command(conn2, sql.data, 0, NULL);
+
 	pgut_command(conn2, "COMMIT", 0, NULL);
 
 	/*
@@ -1620,6 +1575,7 @@ repack_one_table(repack_table *table, const char *orderby)
 		goto cleanup;
 	}
 
+	params[0] = utoa(table->target_oid, buffer);
 	params[1] = utoa(temp_obj_num, indexbuffer);
 	command("SELECT repack.repack_drop($1, $2)", 2, params);
 	command("COMMIT", 0, NULL);
@@ -1817,6 +1773,36 @@ lock_access_share(PGconn *conn, Oid relid, const char *target_name)
 	return ret;
 }
 
+
+static bool
+apply_alter_statement(PGconn *conn, Oid relid, const char *alter_sql)
+{
+	StringInfoData	sql;
+	time_t			start = time(NULL);
+	int				i;
+	bool			ret = true;
+	PGresult   *res;
+
+	initStringInfo(&sql);
+
+	printfStringInfo(&sql, "ALTER TABLE repack.table_%u %s", relid, alter_sql);
+
+	elog(INFO, sql.data);
+	res = pgut_execute_elevel(conn, sql.data, 0, NULL, DEBUG2);
+
+	if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+		ret = false;
+		elog(INFO, 'failed to alter table');
+		ereport(WARNING,
+				(errcode(E_PG_COMMAND),
+				 errmsg("not able to apply the alter statement, received error \"%s\"", res),
+				 errdetail("please debug and provide a valid alter statement")));
+	}
+
+	CLEARPGRES(res);
+
+	return ret;
+}
 
 /* Obtain an advisory lock on the table's OID, to make sure no other
  * pg_repack is working on the table. This is not so much a concern with
@@ -2092,7 +2078,7 @@ repack_table_indexes(PGresult *index_details)
 				continue;
 			}
 
-			if (dryrun)
+			if (!execute_allowed)
 				continue;
 
 			params[0] = utoa(index, buffer[0]);
@@ -2133,7 +2119,7 @@ repack_table_indexes(PGresult *index_details)
 				 getstr(index_details, i, 0));
 	}
 
-	if (dryrun) {
+	if (!execute_allowed) {
 		ret = true;
 		goto done;
 	}
@@ -2333,21 +2319,8 @@ pgut_help(bool details)
 		return;
 
 	printf("Options:\n");
-	printf("  -a, --all                 repack all databases\n");
-	printf("  -t, --table=TABLE         repack specific table only\n");
-	printf("  -I, --parent-table=TABLE  repack specific parent table and its inheritors\n");
-	printf("  -c, --schema=SCHEMA       repack tables in specific schema only\n");
-	printf("  -s, --tablespace=TBLSPC   move repacked tables to a new tablespace\n");
-	printf("  -S, --moveidx             move repacked indexes to TBLSPC too\n");
-	printf("  -o, --order-by=COLUMNS    order by columns instead of cluster keys\n");
-	printf("  -n, --no-order            do vacuum full instead of cluster\n");
-	printf("  -N, --dry-run             print what would have been repacked\n");
-	printf("  -j, --jobs=NUM            Use this many parallel jobs for each table\n");
-	printf("  -i, --index=INDEX         move only the specified index\n");
-	printf("  -x, --only-indexes        move only indexes of the specified table\n");
-	printf("  -T, --wait-timeout=SECS   timeout to cancel other backends on conflict\n");
-	printf("  -D, --no-kill-backend     don't kill other backends when timed out\n");
-	printf("  -Z, --no-analyze          don't analyze at end\n");
-	printf("  -k, --no-superuser-check  skip superuser checks in client\n");
-	printf("  -C, --exclude-extension   don't repack tables which belong to specific extension\n");
+	printf("  -t, --table=TABLE         table to target\n");
+	printf("  -d, --database=DATABASE   database in which the table lives\n");
+	printf("  -a, --alter=ALTER         SQL of the alter statement\n");
+
 }

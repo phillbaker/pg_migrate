@@ -106,11 +106,25 @@ Usage
 The following options can be specified in ``OPTIONS``.
 
 Options:
-  -a, --all                 repack all databases
+  -a,--alter=ALTERSQL
   -t, --table=TABLE         repack specific table only
+
+  -s, --schema=SCHEMA       move repacked tables to a new tablespace
+  --execute                 defaults to false
+  --max-lag
+  --max-load
+  --alter-foreign-keys-method=[rebuild_constraints,drop_swap,none]
+  --skip-check-alter
+  ...
+
+
+
+
+
+
+  -a, --all                 repack all databases
+
   -I, --parent-table=TABLE  repack specific parent table and its inheritors
-  -c, --schema=SCHEMA       repack tables in specific schema only
-  -s, --tablespace=TBLSPC   move repacked tables to a new tablespace
   -S, --moveidx             move repacked indexes to *TBLSPC* too
   -o, --order-by=COLUMNS    order by columns instead of cluster keys
   -n, --no-order            do vacuum full instead of cluster
