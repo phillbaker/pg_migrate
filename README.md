@@ -1,0 +1,35 @@
+# pg_migrate -- Reorganize tables in PostgreSQL databases with minimal locks
+
+- Documentation:
+- Download:
+- Development:
+- Bug Reports:
+
+|travis|
+
+.. |travis| image:: https://travis-ci.org/reorg/pg_repack.svg?branch=master
+    :target: https://travis-ci.org/reorg/pg_repack
+    :alt: Linux and OSX build status
+
+## About
+
+pg_migrate is a PostgreSQL extension which lets you make schema changes to
+tables and indexes. Unlike `ALTER TABLE` it works online, without
+holding a long lived exclusive lock on the processed tables during the migration. It builds a copy of the target table and swaps them.
+
+Please check the documentation (in the ``doc`` directory or online) for
+installation and usage instructions.
+
+Forked from the excellent pg_repack project (https://reorg.github.io/pg_repack).
+
+## Supported Postgres Versions
+
+Postgres >= 9.6
+
+## Known Limitations
+
+* Unique constraints are converted into unique indexes, [they are equivalent in Postgres](https://stackoverflow.com/questions/23542794/postgres-unique-constraint-vs-index). However, this may be an unexpected change.
+* Index names on the target table are changed during the migration.
+* If the target table is used in views or stored procedures, those objects will continue to reference the original table - this is not supported currently.
+* DDL to drop columns from tables is not currently supported.
+
