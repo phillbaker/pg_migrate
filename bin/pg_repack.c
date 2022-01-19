@@ -42,6 +42,16 @@ const char *PROGRAM_VERSION = "unknown";
 #endif
 
 
+#ifndef HIGHBIT
+#define HIGHBIT					(0x80)
+#define IS_HIGHBIT_SET(ch)		((unsigned char)(ch) & HIGHBIT)
+#endif
+
+#ifndef IsToken
+#define IsToken(c) \
+	(IS_HIGHBIT_SET((c)) || isalnum((unsigned char) (c)) || (c) == '_')
+#endif
+
 /*
  * APPLY_COUNT: Number of applied logs per transaction. Larger values
  * could be faster, but will be long transactions in the REDO phase.
@@ -208,6 +218,37 @@ typedef struct repack_table
 	repack_index   *indexes;        /* info on each index */
 } repack_table;
 
+/*
+ * per-table information
+ */
+typedef struct repack_foreign_key
+{
+	const char *table_schema;
+	const char *constraint_name;
+	const char *table_name;
+	const char *column_name;
+	const char *foreign_table_schema;
+	const char *foreign_table_name;
+	const char *foreign_column_name;
+} repack_foreign_key;
+
+typedef struct IndexDef
+{
+	char *create;	/* CREATE INDEX or CREATE UNIQUE INDEX */
+	char *index;	/* index name including schema */
+	char *table;	/* table name including schema */
+	char *type;		/* btree, hash, gist or gin */
+	char *columns;	/* column definition */
+	char *options;	/* options after columns, before TABLESPACE (e.g. COLLATE) */
+	char *tablespace; /* tablespace if specified */
+	char *where;	/* WHERE content if specified */
+} IndexDef;
+
+static char *skip_const(const char *original_sql, char *sql, const char *arg1, const char *arg2);
+static char *skip_ident(const char *original_sql, char *sql);
+static char *parse_error(const char *original_sql);
+static char *skip_until_const(const char *original_sql, char *sql, const char *what);
+static char *skip_until(const char *original_sql, char *sql, char end);
 
 static bool is_superuser(void);
 static void check_tablespace(void);
@@ -215,7 +256,7 @@ static bool preliminary_checks(char *errbuf, size_t errsize);
 static bool is_requested_relation_exists(char *errbuf, size_t errsize);
 static void repack_all_databases(const char *order_by);
 static bool repack_one_database(const char *order_by, char *errbuf, size_t errsize);
-static void repack_one_table(repack_table *table, const char *order_by);
+static void repack_one_table(repack_table *table, const char *order_by, char *errbuf, size_t errsize);
 static bool repack_table_indexes(PGresult *index_details);
 static bool repack_all_indexes(char *errbuf, size_t errsize);
 static void repack_cleanup(bool fatal, const repack_table *table);
@@ -229,6 +270,8 @@ static bool lock_exclusive(PGconn *conn, const char *relid, const char *lock_que
 static bool kill_ddl(PGconn *conn, Oid relid, bool terminate);
 static bool lock_access_share(PGconn *conn, Oid relid, const char *target_name);
 static bool apply_alter_statement(PGconn *conn, Oid relid, const char *alter_sql);
+static int strpos(char *hay, char *needle);
+static void parse_indexdef(IndexDef *stmt, char *sql, const char *idxname, const char *tblname);
 
 #define SQLSTATE_INVALID_SCHEMA_NAME	"3F000"
 #define SQLSTATE_UNDEFINED_FUNCTION		"42883"
@@ -816,6 +859,8 @@ repack_one_database(const char *orderby, char *errbuf, size_t errsize)
 		table.ckid = getoid(res, i, c++);
 
 		if (table.pkid == 0) {
+			// TODO check for views referencing the table
+			// TODO check for stored procedures referencing the table
 			ereport(WARNING,
 					(errcode(E_PG_COMMAND),
 					 errmsg("relation \"%s\" must have a primary key or not-null unique keys", table.target_name)));
@@ -880,7 +925,7 @@ repack_one_database(const char *orderby, char *errbuf, size_t errsize)
 		}
 		table.copy_data = copy_sql.data;
 
-		repack_one_table(&table, orderby);
+		repack_one_table(&table, orderby, errbuf, errsize);
 	}
 	ret = true;
 
@@ -1130,10 +1175,12 @@ cleanup:
 
 
 /*
- * Re-organize one table.
+ * Re-organize one table. This function contains the key
+ * logic. See this blog for a walk through:
+ * https://www.percona.com/blog/2021/06/24/understanding-pg_repack-what-can-go-wrong-and-how-to-avoid-it/
  */
 static void
-repack_one_table(repack_table *table, const char *orderby)
+repack_one_table(repack_table *table, const char *orderby, char *errbuf, size_t errsize)
 {
 	PGresult	   *res = NULL;
 	const char	   *params[3];
@@ -1144,8 +1191,10 @@ repack_one_table(repack_table *table, const char *orderby)
 	bool            ret = false;
 	PGresult       *indexres = NULL;
 	const char     *indexparams[2];
+	const char	   *create_table;
 	char		    indexbuffer[12];
 	int             j;
+	// repack_foreign_key *foreign_keys;
 
 	/* appname will be "pg_repack" in normal use on 9.0+, or
 	 * "pg_regress" when run under `make installcheck`
@@ -1217,6 +1266,7 @@ repack_one_table(repack_table *table, const char *orderby)
 	 * pg_get_indexdef requires an access share lock, so do those calls while
 	 * we have an access exclusive lock anyway, so we know they won't block.
 	 */
+	elog(DEBUG2, "---- find indexes ----");
 
 	indexparams[0] = utoa(table->target_oid, indexbuffer);
 	indexparams[1] = moveidx ? tablespace : NULL;
@@ -1309,6 +1359,7 @@ repack_one_table(repack_table *table, const char *orderby)
 	res = pgut_execute(conn2, "SELECT pg_backend_pid()", 0, NULL);
 	buffer[0] = '\0';
 	strncat(buffer, PQgetvalue(res, 0, 0), sizeof(buffer) - 1);
+	elog(DEBUG2, "server PID of secondary connection: %s", buffer);
 	CLEARPGRES(res);
 
 	/*
@@ -1318,7 +1369,7 @@ repack_one_table(repack_table *table, const char *orderby)
 	 */
 	printfStringInfo(&sql, "LOCK TABLE %s IN ACCESS SHARE MODE",
 					 table->target_name);
-	elog(DEBUG2, "LOCK TABLE %s IN ACCESS SHARE MODE", table->target_name);
+	elog(DEBUG2, "LOCK TABLE %s IN ACCESS SHARE MODE (secondary connection non blocking)", table->target_name);
 	if (PQsetnonblocking(conn2, 1))
 	{
 		elog(WARNING, "Unable to set conn2 nonblocking.");
@@ -1366,7 +1417,7 @@ repack_one_table(repack_table *table, const char *orderby)
 	 */
 	while ((res = PQgetResult(conn2)))
 	{
-		elog(DEBUG2, "Waiting on ACCESS SHARE lock...");
+		elog(DEBUG2, "Waiting on ACCESS SHARE lock (secondary connection)...");
 		if (PQresultStatus(res) != PGRES_COMMAND_OK)
 		{
 			elog(WARNING, "Error with LOCK TABLE: %s", PQerrorMessage(conn2));
@@ -1428,11 +1479,30 @@ repack_one_table(repack_table *table, const char *orderby)
 	if (!(lock_access_share(connection, table->target_oid, table->target_name)))
 		goto cleanup;
 
+	char *tmp_target_name = NULL;
+	tmp_target_name = strdup(table->target_name);
+	char *schema = strtok(tmp_target_name, ".");
+	char *table_without_namespace = strtok(NULL, ".");
+
 	/*
 	 * Create the new table and apply alter statement
 	 */
 	elog(DEBUG2, "---- create temp table ----");
-	command(table->create_table, 0, NULL);
+	resetStringInfo(&sql);
+	// TODO this breaks for statements dropping columns: INSERT has more expressions than target columns
+	printfStringInfo(&sql, "SELECT repack.get_create_table_statement('%s', '%s', 'repack.table_%u')", schema, table_without_namespace, table->target_oid);
+	res = execute(sql.data, 0, NULL);
+
+	if (PQntuples(res) < 1)
+	{
+		elog(WARNING,
+			"unable to generate SQL to CREATE temp table");
+		goto cleanup;
+	}
+
+	create_table = getstr(res, 0, 0);
+	elog(DEBUG2, "--- %s", create_table);
+	command(create_table, 0, NULL);
 
 	if (!(apply_alter_statement(connection, table->target_oid, alter_list.head->val)))
 		goto cleanup;
@@ -1462,8 +1532,6 @@ repack_one_table(repack_table *table, const char *orderby)
 	if (!rebuild_indexes(table))
 		goto cleanup;
 
-	/* don't clear indexes until after rebuild_indexes or bad things happen */
-	CLEARPGRES(indexres);
 	CLEARPGRES(res);
 
 	/*
@@ -1517,13 +1585,171 @@ repack_one_table(repack_table *table, const char *orderby)
 		}
 	}
 
+    /*
+     * Get primary and foreign keys for the table before we block access.
+     */
+	elog(DEBUG2, "---- pre-swap: migrate foreign keys, add primary key ----");
+
+    /* Find name of migrated index to back the primary key to avoid a duplicate index for the primary key */
+    resetStringInfo(&sql);
+    printfStringInfo(&sql,
+            "SELECT"
+            "       pg_get_indexdef(i.oid) AS indexdef,"
+            "       i.relname AS indexname"
+            " FROM pg_index x"
+            " JOIN pg_class c ON c.oid = x.indrelid"
+            " JOIN pg_class i ON i.oid = x.indexrelid"
+            " LEFT JOIN pg_namespace n ON n.oid = c.relnamespace"
+            " LEFT JOIN pg_tablespace t ON t.oid = i.reltablespace"
+            " WHERE (c.relkind = ANY (ARRAY['r'::\"char\", 'm'::\"char\"])) AND i.relkind = 'i'::\"char\" and n.nspname = '%s' and c.relname = '%s' and indisprimary = 't'",
+            schema, table_without_namespace);
+    elog(DEBUG2, "--- %s", sql.data);
+    res = execute_elevel(sql.data, 0, NULL, DEBUG2);
+    /* on error bail */
+    if (PQresultStatus(res) != PGRES_TUPLES_OK)
+    {
+            /* Return the error message otherwise */
+            if (errbuf)
+                    snprintf(errbuf, errsize, "%s", PQerrorMessage(connection));
+            goto cleanup;
+    }
+    char *original_primary_key_def;
+    const char *original_primary_key_name;
+    original_primary_key_def = getstr(res, 0, 0);
+    original_primary_key_name = getstr(res, 0, 1);
+    CLEARPGRES(res);
+    elog(DEBUG2, "original_primary_key_def  :  %s", original_primary_key_def);
+    elog(DEBUG2, "original_primary_key_name  :  %s", original_primary_key_name);
+
+	IndexDef		stmt;
+	parse_indexdef(&stmt, original_primary_key_def, original_primary_key_name, table->target_name);
+	// iterate through indexes and see which one matches the original_primary_key_def
+	const char *backing_index_name = NULL;
+	for (j = 0; j < table->n_indexes; j++)
+	{
+		StringInfoData	index_sql;
+		initStringInfo(&index_sql);
+		printfStringInfo(&index_sql, "ON repack.table_%u USING %s (%s)%s",
+			table->target_oid, stmt.type, stmt.columns, stmt.options);
+		char *original_create_index = strdup(table->indexes[j].create_index);
+		if (strpos(original_create_index, index_sql.data) >= 0)
+		{
+			resetStringInfo(&index_sql);
+			printfStringInfo(&index_sql, "index_%u", table->indexes[j].target_oid);
+			backing_index_name = index_sql.data;
+			break;
+		}
+	}
+
+	/* don't clear indexes until after done accessing table->indexes or memory corrupts */
+	CLEARPGRES(indexres);
+
+	if (backing_index_name == NULL)
+	{
+		elog(DEBUG2, "aborting, couldn't determine migrated primary key");
+		goto cleanup;
+	}
+
+	/* Find existing foreign keys. */
+	resetStringInfo(&sql);
+	printfStringInfo(&sql,
+		"SELECT"
+		"    tc.table_schema,"
+		"    tc.constraint_name,"
+		"    tc.table_name,"
+		"    kcu.column_name,"
+		"    ccu.table_schema AS foreign_table_schema,"
+		"    ccu.table_name AS foreign_table_name,"
+		"    ccu.column_name AS foreign_column_name"
+		" FROM"
+		"    information_schema.table_constraints AS tc"
+		"    JOIN information_schema.key_column_usage AS kcu"
+		"      ON tc.constraint_name = kcu.constraint_name"
+		"      AND tc.table_schema = kcu.table_schema"
+		"    JOIN information_schema.constraint_column_usage AS ccu"
+		"      ON ccu.constraint_name = tc.constraint_name"
+		"      AND ccu.table_schema = tc.table_schema"
+		" WHERE tc.constraint_type = 'FOREIGN KEY' AND ccu.table_name ='%s' and ccu.table_schema = '%s'",
+		table_without_namespace, schema);
+	elog(DEBUG2, "--- %s", sql.data);
+	res = execute_elevel(sql.data, 0, NULL, DEBUG2);
+
+	/* on error bail */
+	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		/* Return the error message otherwise */
+		if (errbuf)
+			snprintf(errbuf, errsize, "%s", PQerrorMessage(connection));
+		goto cleanup;
+	}
+
+	num = PQntuples(res);
+
+	/*
+	 * Rebuild foreign keys so that they point to the new table.
+	 */
+
+	// foreign_keys = pgut_malloc(num * sizeof(repack_foreign_key));
+	elog(DEBUG2, "foreign keys  :  found %d", num);
+	for (j = 0; j < num; j++)
+	{
+		int			c = 0;
+		// foreign_key[i].table_schema = getstr(res, i, c++);
+		// foreign_key[i].constraint_name = getstr(res, i, c++);
+		// foreign_key[i].table_name = getstr(res, i, c++);
+		// foreign_key[i].column_name = getstr(res, i, c++);
+		// foreign_key[i].foreign_table_schema = getstr(res, i, c++);
+		// foreign_key[i].foreign_table_name = getstr(res, i, c++);
+		// foreign_key[i].foreign_column_name = getstr(res, i, c++);
+		const char *table_schema;
+		const char *constraint_name;
+		const char *table_name;
+		const char *column_name;
+		const char *foreign_table_schema;
+		const char *foreign_table_name;
+		const char *foreign_column_name;
+
+		table_schema = getstr(res, j, c++);
+		constraint_name = getstr(res, j, c++);
+		table_name = getstr(res, j, c++);
+		column_name = getstr(res, j, c++);
+		foreign_table_schema = getstr(res, j, c++);
+		foreign_table_name = getstr(res, j, c++);
+		foreign_column_name = getstr(res, j, c++);
+
+		resetStringInfo(&sql);
+		printfStringInfo(&sql,
+			"ALTER TABLE %s.%s ADD CONSTRAINT %s_%u "
+			"FOREIGN KEY (%s) REFERENCES repack.table_%u (%s) NOT VALID",
+			table_schema,
+			table_name,
+			constraint_name,
+			table->target_oid, // TODO handle duplicate fk names/truncations from > 63 chars
+			column_name,
+			table->target_oid, // instead of foreign_table_name
+			foreign_column_name);
+		elog(DEBUG2, "--- %s", sql.data);
+		pgut_command(conn2, sql.data, 0, NULL);
+
+		resetStringInfo(&sql);
+		/* note this DDL will be reversed if we bail because it's in a transaction */
+		printfStringInfo(&sql,
+			"ALTER TABLE %s.%s DROP CONSTRAINT %s",
+			table_schema,
+			table_name,
+			constraint_name);
+		elog(DEBUG2, "--- %s", sql.data);
+		pgut_command(conn2, sql.data, 0, NULL);
+	}
+
+	CLEARPGRES(res);
+
 	/*
 	 * 5. Swap: will be done with conn2, since it already holds an
 	 *    AccessShare lock.
 	 */
 	elog(DEBUG2, "---- swap ----");
 	/* Bump our existing AccessShare lock to AccessExclusive */
-
 	if (!(lock_exclusive(conn2, utoa(table->target_oid, buffer),
 						 table->lock_table, false)))
 	{
@@ -1534,10 +1760,11 @@ repack_one_table(repack_table *table, const char *orderby)
 
 	apply_log(conn2, table, 0);
 
-	char *tmp_target_name = NULL;
-	tmp_target_name = strdup(table->target_name);
-	char *schema = strtok(tmp_target_name, ".");
-	char *table_without_namespace = strtok(NULL, ".");
+	resetStringInfo(&sql);
+	printfStringInfo(&sql, "ALTER TABLE repack.table_%u ADD PRIMARY KEY USING INDEX %s", table->target_oid, backing_index_name);
+	elog(DEBUG2, "--- %s", sql.data);
+	// command(sql.data, 0, NULL);
+	pgut_command(conn2, sql.data, 0, NULL);
 
 	resetStringInfo(&sql);
 	printfStringInfo(&sql, "ALTER TABLE %s RENAME TO %s_pre_migrate_%u", table->target_name, table_without_namespace, table->target_oid);
@@ -1554,6 +1781,7 @@ repack_one_table(repack_table *table, const char *orderby)
 	elog(DEBUG2, "--- %s", sql.data);
 	pgut_command(conn2, sql.data, 0, NULL);
 
+	// TODO why didn't this work?
 	// resetStringInfo(&sql);
 	// printfStringInfo(&sql, "DROP TABLE %s_pre_migrate_%u", table->target_name, table->target_oid);
 	// elog(DEBUG2, "--- %s", sql.data);
@@ -1787,15 +2015,15 @@ apply_alter_statement(PGconn *conn, Oid relid, const char *alter_sql)
 
 	printfStringInfo(&sql, "ALTER TABLE repack.table_%u %s", relid, alter_sql);
 
-	elog(INFO, sql.data);
+	elog(INFO, "%s", sql.data);
 	res = pgut_execute_elevel(conn, sql.data, 0, NULL, DEBUG2);
 
 	if (PQresultStatus(res) != PGRES_COMMAND_OK) {
 		ret = false;
-		elog(INFO, 'failed to alter table');
+		elog(INFO, "failed to alter table");
 		ereport(WARNING,
 				(errcode(E_PG_COMMAND),
-				 errmsg("not able to apply the alter statement, received error \"%s\"", res),
+				 errmsg("not able to apply the alter statement, received error \"%s\"", PQerrorMessage(conn)),
 				 errdetail("please debug and provide a valid alter statement")));
 	}
 
@@ -1943,6 +2171,212 @@ lock_exclusive(PGconn *conn, const char *relid, const char *lock_query, bool sta
 
 	pgut_command(conn, "RESET statement_timeout", 0, NULL);
 	return ret;
+}
+
+static int
+strpos(char *hay, char *needle)
+{
+   char haystack[strlen(hay)];
+   strncpy(haystack, hay, strlen(hay));
+   char *p = strstr(haystack, needle);
+   if (p)
+      return p - haystack;
+   return -1;
+}
+
+// TODO import lib/repack.h instead of duplicating these here, had a linker error
+static char *
+parse_error(const char * original_sql)
+{
+	elog(ERROR, "unexpected index definition: %s", original_sql);
+	return NULL;
+}
+
+static char *
+skip_const(const char * original_sql, char *sql, const char *arg1, const char *arg2)
+{
+	size_t	len;
+
+	if ((arg1 && strncmp(sql, arg1, (len = strlen(arg1))) == 0) ||
+		(arg2 && strncmp(sql, arg2, (len = strlen(arg2))) == 0))
+	{
+		sql[len] = '\0';
+		return sql + len + 1;
+	}
+
+	/* error */
+	return parse_error(original_sql);
+}
+
+static char *
+skip_until_const(const char * original_sql, char *sql, const char *what)
+{
+	char *pos;
+
+	if ((pos = strstr(sql, what)))
+	{
+		size_t	len;
+
+		len = strlen(what);
+		pos[-1] = '\0';
+		return pos + len + 1;
+	}
+
+	/* error */
+	return parse_error(original_sql);
+}
+
+static char *
+skip_ident(const char * original_sql, char *sql)
+{
+	while (*sql && isspace((unsigned char) *sql))
+		sql++;
+
+	if (*sql == '"')
+	{
+		sql++;
+		for (;;)
+		{
+			char *end = strchr(sql, '"');
+			if (end == NULL)
+				return parse_error(original_sql);
+			else if (end[1] != '"')
+			{
+				end[1] = '\0';
+				return end + 2;
+			}
+			else	/* escaped quote ("") */
+				sql = end + 2;
+		}
+	}
+	else
+	{
+		while (*sql && IsToken(*sql))
+			sql++;
+		*sql = '\0';
+		return sql + 1;
+	}
+
+	/* error */
+	return parse_error(original_sql);
+}
+
+/*
+ * Skip until 'end' character found. The 'end' character is replaced with \0.
+ * Returns the next character of the 'end', or NULL if 'end' is not found.
+ */
+static char *
+skip_until(const char * original_sql, char *sql, char end)
+{
+	char	instr = 0;
+	int		nopen = 0;
+
+	for (; *sql && (nopen > 0 || instr != 0 || *sql != end); sql++)
+	{
+		if (instr)
+		{
+			if (sql[0] == instr)
+			{
+				if (sql[1] == instr)
+					sql++;
+				else
+					instr = 0;
+			}
+			else if (sql[0] == '\\')
+				sql++;	/* next char is always string */
+		}
+		else
+		{
+			switch (sql[0])
+			{
+				case '(':
+					nopen++;
+					break;
+				case ')':
+					nopen--;
+					break;
+				case '\'':
+				case '"':
+					instr = sql[0];
+					break;
+			}
+		}
+	}
+
+	if (nopen == 0 && instr == 0)
+	{
+		if (*sql)
+		{
+			*sql = '\0';
+			return sql + 1;
+		}
+		else
+			return NULL;
+	}
+
+	/* error */
+	return parse_error(original_sql);
+}
+
+static void
+parse_indexdef(IndexDef *stmt, char *sql, const char *idxname, const char *tblname)
+{
+	const char *original_sql = strdup(sql);
+	const char *limit = strchr(sql, '\0');
+
+	/* CREATE [UNIQUE] INDEX */
+	stmt->create = sql;
+	sql = skip_const(original_sql, sql, "CREATE INDEX", "CREATE UNIQUE INDEX");
+	/* index */
+	stmt->index = sql;
+	sql = skip_const(original_sql, sql, idxname, NULL);
+	/* ON */
+	sql = skip_const(original_sql, sql, "ON", NULL);
+	/* table */
+	stmt->table = sql;
+	sql = skip_const(original_sql, sql, tblname, NULL);
+	/* USING */
+	sql = skip_const(original_sql, sql, "USING", NULL);
+	/* type */
+	stmt->type = sql;
+	sql = skip_ident(original_sql, sql);
+	/* (columns) */
+	if ((sql = strchr(sql, '(')) == NULL)
+		parse_error(original_sql);
+	sql++;
+	stmt->columns = sql;
+	if ((sql = skip_until(original_sql, sql, ')')) == NULL)
+		parse_error(original_sql);
+
+	/* options */
+	stmt->options = sql;
+	stmt->tablespace = NULL;
+	stmt->where = NULL;
+
+	/* Is there a tablespace? Note that apparently there is never, but
+	 * if there was one it would appear here. */
+	if (sql < limit && strstr(sql, "TABLESPACE"))
+	{
+		sql = skip_until_const(original_sql, sql, "TABLESPACE");
+		stmt->tablespace = sql;
+		sql = skip_ident(original_sql, sql);
+	}
+
+	/* Note: assuming WHERE is the only clause allowed after TABLESPACE */
+	if (sql < limit && strstr(sql, "WHERE"))
+	{
+		sql = skip_until_const(original_sql, sql, "WHERE");
+		stmt->where = sql;
+	}
+
+	elog(DEBUG2, "indexdef.create  = %s", stmt->create);
+	elog(DEBUG2, "indexdef.index   = %s", stmt->index);
+	elog(DEBUG2, "indexdef.table   = %s", stmt->table);
+	elog(DEBUG2, "indexdef.type    = %s", stmt->type);
+	elog(DEBUG2, "indexdef.columns = %s", stmt->columns);
+	elog(DEBUG2, "indexdef.options = %s", stmt->options);
+	elog(DEBUG2, "indexdef.tspace  = %s", stmt->tablespace);
+	elog(DEBUG2, "indexdef.where   = %s", stmt->where);
 }
 
 /* This function calls to repack_drop() to clean temporary objects on error

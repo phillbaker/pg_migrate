@@ -54,6 +54,7 @@
 #include "utils/relcache.h"
 #include "utils/syscache.h"
 
+#include "repack.h"
 #include "pgut/pgut-spi.h"
 #include "pgut/pgut-be.h"
 
@@ -348,23 +349,6 @@ repack_apply(PG_FUNCTION_ARGS)
 	PG_RETURN_INT32(n);
 }
 
-/*
- * Parsed CREATE INDEX statement. You can rebuild sql using
- * sprintf(buf, "%s %s ON %s USING %s (%s)%s",
- *		create, index, table type, columns, options)
- */
-typedef struct IndexDef
-{
-	char *create;	/* CREATE INDEX or CREATE UNIQUE INDEX */
-	char *index;	/* index name including schema */
-	char *table;	/* table name including schema */
-	char *type;		/* btree, hash, gist or gin */
-	char *columns;	/* column definition */
-	char *options;	/* options after columns, before TABLESPACE (e.g. COLLATE) */
-	char *tablespace; /* tablespace if specified */
-	char *where;	/* WHERE content if specified */
-} IndexDef;
-
 static char *
 get_relation_name(Oid relid)
 {
@@ -415,15 +399,15 @@ get_relation_name(Oid relid)
 	return quote_qualified_identifier(nspname, get_rel_name(relid));
 }
 
-static char *
-parse_error(Oid index)
+char *
+parse_error(const char * original_sql)
 {
-	elog(ERROR, "unexpected index definition: %s", pg_get_indexdef_string(index));
+	elog(ERROR, "unexpected index definition: %s", original_sql);
 	return NULL;
 }
 
-static char *
-skip_const(Oid index, char *sql, const char *arg1, const char *arg2)
+char *
+skip_const(const char * original_sql, char *sql, const char *arg1, const char *arg2)
 {
 	size_t	len;
 
@@ -435,11 +419,11 @@ skip_const(Oid index, char *sql, const char *arg1, const char *arg2)
 	}
 
 	/* error */
-	return parse_error(index);
+	return parse_error(original_sql);
 }
 
-static char *
-skip_until_const(Oid index, char *sql, const char *what)
+char *
+skip_until_const(const char * original_sql, char *sql, const char *what)
 {
 	char *pos;
 
@@ -453,11 +437,11 @@ skip_until_const(Oid index, char *sql, const char *what)
 	}
 
 	/* error */
-	return parse_error(index);
+	return parse_error(original_sql);
 }
 
-static char *
-skip_ident(Oid index, char *sql)
+char *
+skip_ident(const char * original_sql, char *sql)
 {
 	while (*sql && isspace((unsigned char) *sql))
 		sql++;
@@ -469,7 +453,7 @@ skip_ident(Oid index, char *sql)
 		{
 			char *end = strchr(sql, '"');
 			if (end == NULL)
-				return parse_error(index);
+				return parse_error(original_sql);
 			else if (end[1] != '"')
 			{
 				end[1] = '\0';
@@ -488,15 +472,15 @@ skip_ident(Oid index, char *sql)
 	}
 
 	/* error */
-	return parse_error(index);
+	return parse_error(original_sql);
 }
 
 /*
  * Skip until 'end' character found. The 'end' character is replaced with \0.
  * Returns the next character of the 'end', or NULL if 'end' is not found.
  */
-static char *
-skip_until(Oid index, char *sql, char end)
+char *
+skip_until(const char * original_sql, char *sql, char end)
 {
 	char	instr = 0;
 	int		nopen = 0;
@@ -545,40 +529,41 @@ skip_until(Oid index, char *sql, char end)
 	}
 
 	/* error */
-	return parse_error(index);
+	return parse_error(original_sql);
 }
 
 static void
 parse_indexdef(IndexDef *stmt, Oid index, Oid table)
 {
 	char *sql = pg_get_indexdef_string(index);
+	const char *original_sql = strdup(sql);
 	const char *idxname = get_quoted_relname(index);
 	const char *tblname = get_relation_name(table);
 	const char *limit = strchr(sql, '\0');
 
 	/* CREATE [UNIQUE] INDEX */
 	stmt->create = sql;
-	sql = skip_const(index, sql, "CREATE INDEX", "CREATE UNIQUE INDEX");
+	sql = skip_const(original_sql, sql, "CREATE INDEX", "CREATE UNIQUE INDEX");
 	/* index */
 	stmt->index = sql;
-	sql = skip_const(index, sql, idxname, NULL);
+	sql = skip_const(original_sql, sql, idxname, NULL);
 	/* ON */
-	sql = skip_const(index, sql, "ON", NULL);
+	sql = skip_const(original_sql, sql, "ON", NULL);
 	/* table */
 	stmt->table = sql;
-	sql = skip_const(index, sql, tblname, NULL);
+	sql = skip_const(original_sql, sql, tblname, NULL);
 	/* USING */
-	sql = skip_const(index, sql, "USING", NULL);
+	sql = skip_const(original_sql, sql, "USING", NULL);
 	/* type */
 	stmt->type = sql;
-	sql = skip_ident(index, sql);
+	sql = skip_ident(original_sql, sql);
 	/* (columns) */
 	if ((sql = strchr(sql, '(')) == NULL)
-		parse_error(index);
+		parse_error(original_sql);
 	sql++;
 	stmt->columns = sql;
-	if ((sql = skip_until(index, sql, ')')) == NULL)
-		parse_error(index);
+	if ((sql = skip_until(original_sql, sql, ')')) == NULL)
+		parse_error(original_sql);
 
 	/* options */
 	stmt->options = sql;
@@ -589,15 +574,15 @@ parse_indexdef(IndexDef *stmt, Oid index, Oid table)
 	 * if there was one it would appear here. */
 	if (sql < limit && strstr(sql, "TABLESPACE"))
 	{
-		sql = skip_until_const(index, sql, "TABLESPACE");
+		sql = skip_until_const(original_sql, sql, "TABLESPACE");
 		stmt->tablespace = sql;
-		sql = skip_ident(index, sql);
+		sql = skip_ident(original_sql, sql);
 	}
 
 	/* Note: assuming WHERE is the only clause allowed after TABLESPACE */
 	if (sql < limit && strstr(sql, "WHERE"))
 	{
-		sql = skip_until_const(index, sql, "WHERE");
+		sql = skip_until_const(original_sql, sql, "WHERE");
 		stmt->where = sql;
 	}
 
@@ -665,6 +650,7 @@ repack_get_order_by(PG_FUNCTION_ARGS)
 	StringInfoData	str;
 	Relation		indexRel = NULL;
 	int				nattr;
+	const char     *original_sql = pg_get_indexdef_string(index);
 
 	parse_indexdef(&stmt, index, table);
 
@@ -684,9 +670,9 @@ repack_get_order_by(PG_FUNCTION_ARGS)
 		token = next;
 		while (isspace((unsigned char) *token))
 			token++;
-		next = skip_until(index, next, ',');
+		next = skip_until(original_sql, next, ',');
 		parse_indexdef_col(token, &coldesc, &colnulls, &colcollate);
-		opcname = skip_until(index, token, ' ');
+		opcname = skip_until(original_sql, token, ' ');
 		appendStringInfoString(&str, token);
 		if (colcollate)
 			appendStringInfo(&str, " %s", colcollate);
