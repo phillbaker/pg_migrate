@@ -1526,7 +1526,8 @@ migrate_one_table(migrate_table *table, const char *orderby, char *errbuf, size_
 	 */
 	elog(DEBUG2, "---- create temp table ----");
 	resetStringInfo(&sql);
-	// TODO this breaks for statements dropping columns: INSERT has more expressions than target columns
+	/* Use a different create tble statement that includes null restrictiona and
+	 * defaults. */
 	printfStringInfo(&sql, "SELECT migrate.get_create_table_statement('%s', '%s', 'migrate.table_%u')", schema, table_without_namespace, table->target_oid);
 	res = execute(sql.data, 0, NULL);
 
@@ -1557,8 +1558,8 @@ migrate_one_table(migrate_table *table, const char *orderby, char *errbuf, size_
 	temp_obj_num++;
 
 	printfStringInfo(&sql, "SELECT migrate.disable_autovacuum('migrate.table_%u')", table->target_oid);
-	if (table->drop_columns)
-		command(table->drop_columns, 0, NULL);
+	/* Note: We don't add dropped columns to the temp table because we're not
+	 * swapping OIDs (the data doesn't need to match) */
 	command(sql.data, 0, NULL);
 	command("COMMIT", 0, NULL);
 

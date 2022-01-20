@@ -126,6 +126,21 @@ WHERE attrelid = $1 AND attnum > 0 ORDER BY attnum
 $$
 LANGUAGE sql STABLE STRICT;
 
+-- Get a column list for SELECT all columns excluding dropped ones.
+CREATE FUNCTION migrate.get_columns_for_insert(oid)
+  RETURNS text AS
+$$
+SELECT coalesce(string_agg(c, ','), '') FROM (SELECT
+  CASE WHEN attisdropped
+    THEN NULL -- note string_agg ignore NULLs
+    ELSE quote_ident(attname)
+  END AS c
+FROM pg_attribute
+WHERE attrelid = $1 AND attnum > 0 ORDER BY attnum
+) AS COL
+$$
+LANGUAGE sql STABLE STRICT;
+
 -- Get a SQL text to DROP dropped columns for the table,
 -- or NULL if it has no dropped columns.
 CREATE FUNCTION migrate.get_drop_columns(oid, text)
@@ -323,7 +338,7 @@ CREATE VIEW migrate.tables AS
          'CREATE TABLE migrate.table_' || R.oid || ' WITH (' || migrate.get_storage_param(R.oid) || ') TABLESPACE '  AS create_table_1,
          coalesce(quote_ident(S.spcname), 'pg_default') as tablespace_orig,
          ' AS SELECT ' || migrate.get_columns_for_create_as(R.oid) || ' FROM ONLY ' || migrate.oid2text(R.oid) AS create_table_2,
-         'INSERT INTO migrate.table_' || R.oid || ' SELECT ' || migrate.get_columns_for_create_as(R.oid) || ' FROM ONLY ' || migrate.oid2text(R.oid) AS copy_data,
+         'INSERT INTO migrate.table_' || R.oid || ' SELECT ' || migrate.get_columns_for_insert(R.oid) || ' FROM ONLY ' || migrate.oid2text(R.oid) AS copy_data,
          migrate.get_alter_col_storage(R.oid) AS alter_col_storage,
          migrate.get_drop_columns(R.oid, 'migrate.table_' || R.oid) AS drop_columns,
          'DELETE FROM migrate.log_' || R.oid AS delete_log,
