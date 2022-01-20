@@ -1194,7 +1194,7 @@ migrate_one_table(migrate_table *table, const char *orderby, char *errbuf, size_
 	const char	   *create_table;
 	char		    indexbuffer[12];
 	int             j;
-	// migrate_foreign_key *foreign_keys;
+	migrate_foreign_key *foreign_keys;
 
 	/* appname will be "pg_migrate" in normal use on 9.0+, or
 	 * "pg_regress" when run under `make installcheck`
@@ -1689,45 +1689,30 @@ migrate_one_table(migrate_table *table, const char *orderby, char *errbuf, size_
 	 * Rebuild foreign keys so that they point to the new table.
 	 */
 
-	// foreign_keys = pgut_malloc(num * sizeof(migrate_foreign_key));
+	foreign_keys = pgut_malloc(num * sizeof(migrate_foreign_key));
 	elog(DEBUG2, "foreign keys  :  found %d", num);
 	for (j = 0; j < num; j++)
 	{
 		int			c = 0;
-		// foreign_key[i].table_schema = getstr(res, i, c++);
-		// foreign_key[i].constraint_name = getstr(res, i, c++);
-		// foreign_key[i].table_name = getstr(res, i, c++);
-		// foreign_key[i].column_name = getstr(res, i, c++);
-		// foreign_key[i].foreign_table_schema = getstr(res, i, c++);
-		// foreign_key[i].foreign_table_name = getstr(res, i, c++);
-		// foreign_key[i].foreign_column_name = getstr(res, i, c++);
-		const char *table_schema;
-		const char *constraint_name;
-		const char *table_name;
-		const char *column_name;
-		const char *foreign_table_schema;
-		const char *foreign_table_name;
-		const char *foreign_column_name;
-
-		table_schema = getstr(res, j, c++);
-		constraint_name = getstr(res, j, c++);
-		table_name = getstr(res, j, c++);
-		column_name = getstr(res, j, c++);
-		foreign_table_schema = getstr(res, j, c++);
-		foreign_table_name = getstr(res, j, c++);
-		foreign_column_name = getstr(res, j, c++);
+		foreign_keys[j].table_schema = getstr(res, j, c++);
+		foreign_keys[j].constraint_name = getstr(res, j, c++);
+		foreign_keys[j].table_name = getstr(res, j, c++);
+		foreign_keys[j].column_name = getstr(res, j, c++);
+		foreign_keys[j].foreign_table_schema = getstr(res, j, c++);
+		foreign_keys[j].foreign_table_name = getstr(res, j, c++);
+		foreign_keys[j].foreign_column_name = getstr(res, j, c++);
 
 		resetStringInfo(&sql);
 		printfStringInfo(&sql,
 			"ALTER TABLE %s.%s ADD CONSTRAINT %s_%u "
 			"FOREIGN KEY (%s) REFERENCES migrate.table_%u (%s) NOT VALID",
-			table_schema,
-			table_name,
-			constraint_name,
+			foreign_keys[j].table_schema,
+			foreign_keys[j].table_name,
+			foreign_keys[j].constraint_name,
 			table->target_oid, // TODO handle duplicate fk names/truncations from > 63 chars
-			column_name,
+			foreign_keys[j].column_name,
 			table->target_oid, // instead of foreign_table_name
-			foreign_column_name);
+			foreign_keys[j].foreign_column_name);
 		elog(DEBUG2, "--- %s", sql.data);
 		pgut_command(conn2, sql.data, 0, NULL);
 
@@ -1735,9 +1720,9 @@ migrate_one_table(migrate_table *table, const char *orderby, char *errbuf, size_
 		/* note this DDL will be reversed if we bail because it's in a transaction */
 		printfStringInfo(&sql,
 			"ALTER TABLE %s.%s DROP CONSTRAINT %s",
-			table_schema,
-			table_name,
-			constraint_name);
+			foreign_keys[j].table_schema,
+			foreign_keys[j].table_name,
+			foreign_keys[j].constraint_name);
 		elog(DEBUG2, "--- %s", sql.data);
 		pgut_command(conn2, sql.data, 0, NULL);
 	}
@@ -1788,6 +1773,22 @@ migrate_one_table(migrate_table *table, const char *orderby, char *errbuf, size_
 	// pgut_command(conn2, sql.data, 0, NULL);
 
 	pgut_command(conn2, "COMMIT", 0, NULL);
+
+	elog(DEBUG2, "---- validate foreign keys ----");
+
+	// see https://travisofthenorth.com/blog/2017/2/2/postgres-adding-foreign-keys-with-zero-downtime
+	for (j = 0; j < num; j++)
+	{
+		resetStringInfo(&sql);
+		printfStringInfo(&sql,
+			"ALTER TABLE %s.%s VALIDATE CONSTRAINT %s_%u",
+			foreign_keys[j].table_schema,
+			foreign_keys[j].table_name,
+			foreign_keys[j].constraint_name,
+			table->target_oid);
+		elog(DEBUG2, "--- %s", sql.data);
+		pgut_command(conn2, sql.data, 0, NULL);
+	}
 
 	/*
 	 * 6. Drop.
