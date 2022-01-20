@@ -1,8 +1,8 @@
 {
-   "name": "pg_repack",
-   "abstract": "PostgreSQL module for data reorganization",
+   "name": "pg_migrate",
+   "abstract": "Migrates a PostgreSQL table avoiding long locks",
    "description": "Reorganize tables in PostgreSQL databases with minimal locks",
-   "version": "1.4.7",
+   "version": "0.1.0",
    "maintainer": [
        "Beena Emerson <memissemerson@gmail.com>",
        "Josh Kupershmidt <schmiddy@gmail.com>",
@@ -13,10 +13,10 @@
    "release_status": "stable",
    "license": "bsd",
    "provides": {
-      "pg_repack": {
-         "file": "lib/pg_repack.sql",
-         "version": "1.4.7",
-         "abstract": "Reorganize tables in PostgreSQL databases with minimal locks"
+      "pg_migrate": {
+         "file": "lib/pg_migrate.sql",
+         "version": "0.1.0",
+         "abstract": "Migrates a PostgreSQL table avoiding long locks"
       }
    },
    "prereqs": {
@@ -27,13 +27,13 @@
       }
    },
    "resources": {
-      "homepage": "https://reorg.github.io/pg_repack",
+      "homepage": "",
       "bugtracker": {
-         "web": "https://github.com/reorg/pg_repack/issues"
+         "web": ""
       },
       "repository": {
-          "url": "git://github.com/reorg/pg_repack.git",
-          "web": "https://github.com/reorg/pg_repack/",
+          "url": "",
+          "web": "",
           "type": "git"
       }
    },

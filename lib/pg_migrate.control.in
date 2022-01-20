@@ -1,0 +1,5 @@
+# pg_migrate extension
+comment = 'Migrates a PostgreSQL table avoiding long locks'
+default_version = 'MIGRATE_VERSION'
+module_pathname = '$libdir/pg_migrate'
+relocatable = false

@@ -1,5 +1,5 @@
 /*
- * pg_repack.c: bin/pg_repack.c
+ * pg_migrate.c: bin/pg_migrate.c
  *
  * Portions Copyright (c) 2008-2011, NIPPON TELEGRAPH AND TELEPHONE CORPORATION
  * Portions Copyright (c) 2011, Itagaki Takahiro
@@ -10,14 +10,14 @@
  * @brief Client Modules
  */
 
-const char *PROGRAM_URL		= "https://reorg.github.io/pg_repack/";
-const char *PROGRAM_ISSUES	= "https://github.com/reorg/pg_repack/issues";
+const char *PROGRAM_URL		= "https://github.com/phillbaker/pg_migrate";
+const char *PROGRAM_ISSUES	= "https://github.com/phillbaker/pg_migrate/issues";
 
-#ifdef REPACK_VERSION
+#ifdef MIGRATE_VERSION
 /* macro trick to stringify a macro expansion */
 #define xstr(s) str(s)
 #define str(s) #s
-const char *PROGRAM_VERSION = xstr(REPACK_VERSION);
+const char *PROGRAM_VERSION = xstr(MIGRATE_VERSION);
 #else
 const char *PROGRAM_VERSION = "unknown";
 #endif
@@ -67,11 +67,11 @@ const char *PROGRAM_VERSION = "unknown";
 #define POLL_TIMEOUT    3
 
 /* Compile an array of existing transactions which are active during
- * pg_repack's setup. Some transactions we can safely ignore:
+ * pg_migrate's setup. Some transactions we can safely ignore:
  *  a. The '1/1, -1/0' lock skipped is from the bgwriter on newly promoted
  *     servers. See https://github.com/reorg/pg_reorg/issues/1
  *  b. Our own database connections
- *  c. Other pg_repack clients, as distinguished by application_name, which
+ *  c. Other pg_migrate clients, as distinguished by application_name, which
  *     may be operating on other tables at the same time. See
  *     https://github.com/reorg/pg_repack/issues/1
  *  d. open transactions/locks existing on other databases than the actual
@@ -168,7 +168,7 @@ const char *PROGRAM_VERSION = "unknown";
 	" AND mode = 'AccessExclusiveLock' AND pid <> pg_backend_pid()"
 
 /* Will be used as a unique prefix for advisory locks. */
-#define REPACK_LOCK_PREFIX_STR "16185446"
+#define MIGRATE_LOCK_PREFIX_STR "16185446"
 
 typedef enum
 {
@@ -180,18 +180,18 @@ typedef enum
 /*
  * per-index information
  */
-typedef struct repack_index
+typedef struct migrate_index
 {
 	Oid				target_oid;		/* target: OID */
 	const char	   *create_index;	/* CREATE INDEX */
 	index_status_t  status; 		/* Track parallel build statuses. */
 	int             worker_idx;		/* which worker conn is handling */
-} repack_index;
+} migrate_index;
 
 /*
  * per-table information
  */
-typedef struct repack_table
+typedef struct migrate_table
 {
 	const char	   *target_name;	/* target: relname */
 	Oid				target_oid;		/* target: OID */
@@ -201,8 +201,8 @@ typedef struct repack_table
 	Oid				ckid;			/* target: CK OID */
 	const char	   *create_pktype;	/* CREATE TYPE pk */
 	const char	   *create_log;		/* CREATE TABLE log */
-	const char	   *create_trigger;	/* CREATE TRIGGER repack_trigger */
-	const char	   *enable_trigger;	/* ALTER TABLE ENABLE ALWAYS TRIGGER repack_trigger */
+	const char	   *create_trigger;	/* CREATE TRIGGER migrate_trigger */
+	const char	   *enable_trigger;	/* ALTER TABLE ENABLE ALWAYS TRIGGER migrate_trigger */
 	const char	   *create_table;	/* CREATE TABLE table AS SELECT WITH NO DATA*/
 	const char	   *copy_data;		/* INSERT INTO */
 	const char	   *alter_col_storage;	/* ALTER TABLE ALTER COLUMN SET STORAGE */
@@ -215,13 +215,13 @@ typedef struct repack_table
 	const char	   *sql_update;		/* SQL used in flush */
 	const char	   *sql_pop;		/* SQL used in flush */
 	int             n_indexes;      /* number of indexes */
-	repack_index   *indexes;        /* info on each index */
-} repack_table;
+	migrate_index   *indexes;        /* info on each index */
+} migrate_table;
 
 /*
  * per-table information
  */
-typedef struct repack_foreign_key
+typedef struct migrate_foreign_key
 {
 	const char *table_schema;
 	const char *constraint_name;
@@ -230,7 +230,7 @@ typedef struct repack_foreign_key
 	const char *foreign_table_schema;
 	const char *foreign_table_name;
 	const char *foreign_column_name;
-} repack_foreign_key;
+} migrate_foreign_key;
 
 typedef struct IndexDef
 {
@@ -256,12 +256,12 @@ static bool preliminary_checks(char *errbuf, size_t errsize);
 static bool is_requested_relation_exists(char *errbuf, size_t errsize);
 static void repack_all_databases(const char *order_by);
 static bool repack_one_database(const char *order_by, char *errbuf, size_t errsize);
-static void repack_one_table(repack_table *table, const char *order_by, char *errbuf, size_t errsize);
+static void migrate_one_table(migrate_table *table, const char *order_by, char *errbuf, size_t errsize);
 static bool repack_table_indexes(PGresult *index_details);
 static bool repack_all_indexes(char *errbuf, size_t errsize);
-static void repack_cleanup(bool fatal, const repack_table *table);
-static void repack_cleanup_callback(bool fatal, void *userdata);
-static bool rebuild_indexes(const repack_table *table);
+static void migrate_cleanup(bool fatal, const migrate_table *table);
+static void migrate_cleanup_callback(bool fatal, void *userdata);
+static bool rebuild_indexes(const migrate_table *table);
 
 static char *getstr(PGresult *res, int row, int col);
 static Oid getoid(PGresult *res, int row, int col);
@@ -300,7 +300,7 @@ static bool				execute_allowed = false;
 static unsigned int		temp_obj_num = 0; /* temporary objects counter */
 static bool				no_kill_backend = false; /* abandon when timed-out */
 static bool				no_superuser_check = false;
-static SimpleStringList	exclude_extension_list = {NULL, NULL}; /* don't repack tables of these extensions */
+static SimpleStringList	exclude_extension_list = {NULL, NULL}; /* don't migrate tables of these extensions */
 
 /* buffer should have at least 11 bytes */
 static char *
@@ -432,7 +432,7 @@ check_tablespace()
 }
 
 /*
- * Perform sanity checks before beginning work. Make sure pg_repack is
+ * Perform sanity checks before beginning work. Make sure pg_migrate is
  * installed in the database, the user is a superuser, etc.
  */
 static bool
@@ -448,14 +448,14 @@ preliminary_checks(char *errbuf, size_t errsize){
 	}
 
 	/* Query the extension version. Exit if no match */
-	res = execute_elevel("select repack.version(), repack.version_sql()",
+	res = execute_elevel("select migrate.version(), migrate.version_sql()",
 		0, NULL, DEBUG2);
 	if (PQresultStatus(res) == PGRES_TUPLES_OK)
 	{
 		const char	   *libver;
 		char			buf[64];
 
-		/* the string is something like "pg_repack 1.1.7" */
+		/* the string is something like "pg_migrate 1.1.7" */
 		snprintf(buf, sizeof(buf), "%s %s", PROGRAM_NAME, PROGRAM_VERSION);
 
 		/* check the version of the C library */
@@ -485,7 +485,7 @@ preliminary_checks(char *errbuf, size_t errsize){
 		if (sqlstate_equals(res, SQLSTATE_INVALID_SCHEMA_NAME)
 			|| sqlstate_equals(res, SQLSTATE_UNDEFINED_FUNCTION))
 		{
-			/* Schema repack does not exist, or version too old (version
+			/* Schema migrate does not exist, or version too old (version
 			 * functions not found). Skip the database.
 			 */
 			if (errbuf)
@@ -565,7 +565,7 @@ is_requested_relation_exists(char *errbuf, size_t errsize){
 	appendStringInfoString(&sql,
 		") AS given_t(r)"
 		" WHERE NOT EXISTS("
-		"  SELECT FROM repack.tables WHERE relid=to_regclass(given_t.r) )"
+		"  SELECT FROM migrate.tables WHERE relid=to_regclass(given_t.r) )"
 	);
 
 	/* double check the parameters array is sane */
@@ -683,7 +683,7 @@ getoid(PGresult *res, int row, int col)
 }
 
 /*
- * Call repack_one_table for the target tables or each table in a database.
+ * Call migrate_one_table for the target tables or each table in a database.
  */
 static bool
 repack_one_database(const char *orderby, char *errbuf, size_t errsize)
@@ -732,7 +732,7 @@ repack_one_database(const char *orderby, char *errbuf, size_t errsize)
 	appendStringInfoString(&sql,
 		"SELECT t.*,"
 		" coalesce(v.tablespace, t.tablespace_orig) as tablespace_dest"
-		" FROM repack.tables t, "
+		" FROM migrate.tables t, "
 		" (VALUES (quote_ident($1::text))) as v (tablespace)"
 		" WHERE ");
 
@@ -765,7 +765,7 @@ repack_one_database(const char *orderby, char *errbuf, size_t errsize)
 			{
 				/* Construct table name placeholders to be used by PQexecParams */
 				appendStringInfo(&sql,
-								 "relid = ANY(repack.get_table_and_inheritors($%d::regclass))",
+								 "relid = ANY(migrate.get_table_and_inheritors($%d::regclass))",
 								 iparam + 1);
 				params[iparam++] = cell->val;
 				if (cell->next)
@@ -842,7 +842,7 @@ repack_one_database(const char *orderby, char *errbuf, size_t errsize)
 
 	for (i = 0; i < num; i++)
 	{
-		repack_table	table;
+		migrate_table	table;
 		StringInfoData	copy_sql;
 		const char *create_table_1;
 		const char *create_table_2;
@@ -925,7 +925,7 @@ repack_one_database(const char *orderby, char *errbuf, size_t errsize)
 		}
 		table.copy_data = copy_sql.data;
 
-		repack_one_table(&table, orderby, errbuf, errsize);
+		migrate_one_table(&table, orderby, errbuf, errsize);
 	}
 	ret = true;
 
@@ -938,7 +938,7 @@ cleanup:
 }
 
 static int
-apply_log(PGconn *conn, const repack_table *table, int count)
+apply_log(PGconn *conn, const migrate_table *table, int count)
 {
 	int			result;
 	PGresult   *res;
@@ -953,7 +953,7 @@ apply_log(PGconn *conn, const repack_table *table, int count)
 	params[5] = utoa(count, buffer);
 
 	res = pgut_execute(conn,
-					   "SELECT repack.repack_apply($1, $2, $3, $4, $5, $6)",
+					   "SELECT migrate.migrate_apply($1, $2, $3, $4, $5, $6)",
 					   6, params);
 	result = atoi(PQgetvalue(res, 0, 0));
 	CLEARPGRES(res);
@@ -966,14 +966,14 @@ apply_log(PGconn *conn, const repack_table *table, int count)
  * concurrently if the user asked for --jobs=...
  */
 static bool
-rebuild_indexes(const repack_table *table)
+rebuild_indexes(const migrate_table *table)
 {
 	PGresult	   *res = NULL;
 	int			    num_indexes;
 	int				i;
 	int				num_active_workers;
 	int				num_workers;
-	repack_index   *index_jobs;
+	migrate_index   *index_jobs;
 	bool            have_error = false;
 
 	elog(DEBUG2, "---- create indexes ----");
@@ -1180,7 +1180,7 @@ cleanup:
  * https://www.percona.com/blog/2021/06/24/understanding-pg_repack-what-can-go-wrong-and-how-to-avoid-it/
  */
 static void
-repack_one_table(repack_table *table, const char *orderby, char *errbuf, size_t errsize)
+migrate_one_table(migrate_table *table, const char *orderby, char *errbuf, size_t errsize)
 {
 	PGresult	   *res = NULL;
 	const char	   *params[3];
@@ -1194,18 +1194,18 @@ repack_one_table(repack_table *table, const char *orderby, char *errbuf, size_t 
 	const char	   *create_table;
 	char		    indexbuffer[12];
 	int             j;
-	// repack_foreign_key *foreign_keys;
+	// migrate_foreign_key *foreign_keys;
 
-	/* appname will be "pg_repack" in normal use on 9.0+, or
+	/* appname will be "pg_migrate" in normal use on 9.0+, or
 	 * "pg_regress" when run under `make installcheck`
 	 */
 	const char     *appname = getenv("PGAPPNAME");
 
 	/* Keep track of whether we have gotten through setup to install
-	 * the repack_trigger, log table, etc. ourselves. We don't want to
-	 * go through repack_cleanup() if we didn't actually set up the
-	 * trigger ourselves, lest we be cleaning up another pg_repack's mess,
-	 * or worse, interfering with a still-running pg_repack.
+	 * the migrate_trigger, log table, etc. ourselves. We don't want to
+	 * go through migrate_cleanup() if we didn't actually set up the
+	 * trigger ourselves, lest we be cleaning up another pg_migrate's mess,
+	 * or worse, interfering with a still-running pg_migrate.
 	 */
 	bool            table_init = false;
 
@@ -1213,7 +1213,7 @@ repack_one_table(repack_table *table, const char *orderby, char *errbuf, size_t 
 
 	elog(INFO, "migrating table \"%s\"", table->target_name);
 
-	elog(DEBUG2, "---- repack_one_table ----");
+	elog(DEBUG2, "---- migrate_one_table ----");
 	elog(DEBUG2, "target_name       : %s", table->target_name);
 	elog(DEBUG2, "target_oid        : %u", table->target_oid);
 	elog(DEBUG2, "target_toast      : %u", table->target_toast);
@@ -1240,8 +1240,8 @@ repack_one_table(repack_table *table, const char *orderby, char *errbuf, size_t 
 	if (!execute_allowed)
 		return;
 
-	/* push repack_cleanup_callback() on stack to clean temporary objects */
-	pgut_atexit_push(repack_cleanup_callback, &table->target_oid);
+	/* push migrate_cleanup_callback() on stack to clean temporary objects */
+	pgut_atexit_push(migrate_cleanup_callback, &table->target_oid);
 
 	/*
 	 * 1. Setup advisory lock and trigger on main table.
@@ -1256,7 +1256,7 @@ repack_one_table(repack_table *table, const char *orderby, char *errbuf, size_t 
 	if (!(lock_exclusive(connection, buffer, table->lock_table, true)))
 	{
 		if (no_kill_backend)
-			elog(INFO, "Skipping repack %s due to timeout", table->target_name);
+			elog(INFO, "Skipping migrate %s due to timeout", table->target_name);
 		else
 			elog(WARNING, "lock_exclusive() failed for %s", table->target_name);
 		goto cleanup;
@@ -1288,12 +1288,12 @@ repack_one_table(repack_table *table, const char *orderby, char *errbuf, size_t 
 
 	indexres = execute(
 		"SELECT indexrelid,"
-		" repack.repack_indexdef(indexrelid, indrelid, $2, FALSE) "
+		" migrate.migrate_indexdef(indexrelid, indrelid, $2, FALSE) "
 		" FROM pg_index WHERE indrelid = $1 AND indisvalid",
 		2, indexparams);
 
 	table->n_indexes = PQntuples(indexres);
-	table->indexes = pgut_malloc(table->n_indexes * sizeof(repack_index));
+	table->indexes = pgut_malloc(table->n_indexes * sizeof(migrate_index));
 
 	for (j = 0; j < table->n_indexes; j++)
 	{
@@ -1311,24 +1311,24 @@ repack_one_table(repack_table *table, const char *orderby, char *errbuf, size_t 
 
 
 	/*
-	 * Check if repack_trigger is not conflict with existing trigger. We can
+	 * Check if migrate_trigger is not conflict with existing trigger. We can
 	 * find it out later but we check it in advance and go to cleanup if needed.
 	 * In AFTER trigger context, since triggered tuple is not changed by other
 	 * trigger we don't care about the fire order.
 	 */
-	res = execute("SELECT repack.conflicted_triggers($1)", 1, params);
+	res = execute("SELECT migrate.conflicted_triggers($1)", 1, params);
 	if (PQntuples(res) > 0)
 	{
 		ereport(WARNING,
 				(errcode(E_PG_COMMAND),
 				 errmsg("the table \"%s\" already has a trigger called \"%s\"",
-						table->target_name, "repack_trigger"),
+						table->target_name, "migrate_trigger"),
 				 errdetail(
 					 "The trigger was probably installed during a previous"
-					 " attempt to run pg_repack on the table which was"
+					 " attempt to run pg_migrate on the table which was"
 					 " interrupted and for some reason failed to clean up"
 					 " the temporary objects.  Please drop the trigger or drop"
-					" and recreate the pg_repack extension altogether"
+					" and recreate the pg_migrate extension altogether"
 					 " to remove all the temporary objects left over.")));
 		goto cleanup;
 	}
@@ -1342,7 +1342,7 @@ repack_one_table(repack_table *table, const char *orderby, char *errbuf, size_t 
 	command(table->create_trigger, 0, NULL);
 	temp_obj_num++;
 	command(table->enable_trigger, 0, NULL);
-	printfStringInfo(&sql, "SELECT repack.disable_autovacuum('repack.log_%u')", table->target_oid);
+	printfStringInfo(&sql, "SELECT migrate.disable_autovacuum('migrate.log_%u')", table->target_oid);
 	command(sql.data, 0, NULL);
 
 	/* While we are still holding an AccessExclusive lock on the table, submit
@@ -1395,7 +1395,7 @@ repack_one_table(repack_table *table, const char *orderby, char *errbuf, size_t 
 	if (!(kill_ddl(connection, table->target_oid, true)))
 	{
 		if (no_kill_backend)
-			elog(INFO, "Skipping repack %s due to timeout.", table->target_name);
+			elog(INFO, "Skipping migrate %s due to timeout.", table->target_name);
 		else
 			elog(WARNING, "kill_ddl() failed.");
 		goto cleanup;
@@ -1406,7 +1406,7 @@ repack_one_table(repack_table *table, const char *orderby, char *errbuf, size_t 
 	 */
 	command("COMMIT", 0, NULL);
 
-	/* The main connection has now committed its repack_trigger,
+	/* The main connection has now committed its migrate_trigger,
 	 * log table, and temp. table. If any error occurs from this point
 	 * on and we bail out, we should try to clean those up.
 	 */
@@ -1490,7 +1490,7 @@ repack_one_table(repack_table *table, const char *orderby, char *errbuf, size_t 
 	elog(DEBUG2, "---- create temp table ----");
 	resetStringInfo(&sql);
 	// TODO this breaks for statements dropping columns: INSERT has more expressions than target columns
-	printfStringInfo(&sql, "SELECT repack.get_create_table_statement('%s', '%s', 'repack.table_%u')", schema, table_without_namespace, table->target_oid);
+	printfStringInfo(&sql, "SELECT migrate.get_create_table_statement('%s', '%s', 'migrate.table_%u')", schema, table_without_namespace, table->target_oid);
 	res = execute(sql.data, 0, NULL);
 
 	if (PQntuples(res) < 1)
@@ -1519,7 +1519,7 @@ repack_one_table(repack_table *table, const char *orderby, char *errbuf, size_t 
 	command(table->copy_data, 0, NULL);
 	temp_obj_num++;
 
-	printfStringInfo(&sql, "SELECT repack.disable_autovacuum('repack.table_%u')", table->target_oid);
+	printfStringInfo(&sql, "SELECT migrate.disable_autovacuum('migrate.table_%u')", table->target_oid);
 	if (table->drop_columns)
 		command(table->drop_columns, 0, NULL);
 	command(sql.data, 0, NULL);
@@ -1629,7 +1629,7 @@ repack_one_table(repack_table *table, const char *orderby, char *errbuf, size_t 
 	{
 		StringInfoData	index_sql;
 		initStringInfo(&index_sql);
-		printfStringInfo(&index_sql, "ON repack.table_%u USING %s (%s)%s",
+		printfStringInfo(&index_sql, "ON migrate.table_%u USING %s (%s)%s",
 			table->target_oid, stmt.type, stmt.columns, stmt.options);
 		char *original_create_index = strdup(table->indexes[j].create_index);
 		if (strpos(original_create_index, index_sql.data) >= 0)
@@ -1689,7 +1689,7 @@ repack_one_table(repack_table *table, const char *orderby, char *errbuf, size_t 
 	 * Rebuild foreign keys so that they point to the new table.
 	 */
 
-	// foreign_keys = pgut_malloc(num * sizeof(repack_foreign_key));
+	// foreign_keys = pgut_malloc(num * sizeof(migrate_foreign_key));
 	elog(DEBUG2, "foreign keys  :  found %d", num);
 	for (j = 0; j < num; j++)
 	{
@@ -1720,7 +1720,7 @@ repack_one_table(repack_table *table, const char *orderby, char *errbuf, size_t 
 		resetStringInfo(&sql);
 		printfStringInfo(&sql,
 			"ALTER TABLE %s.%s ADD CONSTRAINT %s_%u "
-			"FOREIGN KEY (%s) REFERENCES repack.table_%u (%s) NOT VALID",
+			"FOREIGN KEY (%s) REFERENCES migrate.table_%u (%s) NOT VALID",
 			table_schema,
 			table_name,
 			constraint_name,
@@ -1761,7 +1761,7 @@ repack_one_table(repack_table *table, const char *orderby, char *errbuf, size_t 
 	apply_log(conn2, table, 0);
 
 	resetStringInfo(&sql);
-	printfStringInfo(&sql, "ALTER TABLE repack.table_%u ADD PRIMARY KEY USING INDEX %s", table->target_oid, backing_index_name);
+	printfStringInfo(&sql, "ALTER TABLE migrate.table_%u ADD PRIMARY KEY USING INDEX %s", table->target_oid, backing_index_name);
 	elog(DEBUG2, "--- %s", sql.data);
 	// command(sql.data, 0, NULL);
 	pgut_command(conn2, sql.data, 0, NULL);
@@ -1772,12 +1772,12 @@ repack_one_table(repack_table *table, const char *orderby, char *errbuf, size_t 
 	pgut_command(conn2, sql.data, 0, NULL);
 
 	resetStringInfo(&sql);
-	printfStringInfo(&sql, "ALTER TABLE repack.table_%u RENAME TO %s", table->target_oid, table_without_namespace);
+	printfStringInfo(&sql, "ALTER TABLE migrate.table_%u RENAME TO %s", table->target_oid, table_without_namespace);
 	elog(DEBUG2, "--- %s", sql.data);
 	pgut_command(conn2, sql.data, 0, NULL);
 
 	resetStringInfo(&sql);
-	printfStringInfo(&sql, "ALTER TABLE repack.%s SET SCHEMA %s", table_without_namespace, schema);
+	printfStringInfo(&sql, "ALTER TABLE migrate.%s SET SCHEMA %s", table_without_namespace, schema);
 	elog(DEBUG2, "--- %s", sql.data);
 	pgut_command(conn2, sql.data, 0, NULL);
 
@@ -1805,7 +1805,7 @@ repack_one_table(repack_table *table, const char *orderby, char *errbuf, size_t 
 
 	params[0] = utoa(table->target_oid, buffer);
 	params[1] = utoa(temp_obj_num, indexbuffer);
-	command("SELECT repack.repack_drop($1, $2)", 2, params);
+	command("SELECT migrate.migrate_drop($1, $2)", 2, params);
 	command("COMMIT", 0, NULL);
 	temp_obj_num = 0; /* reset temporary object counter after cleanup */
 
@@ -1825,7 +1825,7 @@ repack_one_table(repack_table *table, const char *orderby, char *errbuf, size_t 
 	}
 
 	/* Release advisory lock on table. */
-	params[0] = REPACK_LOCK_PREFIX_STR;
+	params[0] = MIGRATE_LOCK_PREFIX_STR;
 	params[1] = utoa(table->target_oid, buffer);
 
 	res = pgut_execute(connection, "SELECT pg_advisory_unlock($1, CAST(-2147483648 + $2::bigint AS integer))",
@@ -1843,10 +1843,10 @@ cleanup:
 	pgut_rollback(conn2);
 
 	/* XXX: distinguish between fatal and non-fatal errors via the first
-	 * arg to repack_cleanup().
+	 * arg to migrate_cleanup().
 	 */
 	if ((!ret) && table_init)
-		repack_cleanup(false, table);
+		migrate_cleanup(false, table);
 }
 
 /* Kill off any concurrent DDL (or any transaction attempting to take
@@ -1878,7 +1878,7 @@ kill_ddl(PGconn *conn, Oid relid, bool terminate)
 		 */
 		if (no_kill_backend)
 		{
-			elog(WARNING, "%d unsafe queries remain but do not cancel them and skip to repack it",
+			elog(WARNING, "%d unsafe queries remain but do not cancel them and skip to migrate it",
 				 n_tuples);
 			ret = false;
 		}
@@ -2013,7 +2013,7 @@ apply_alter_statement(PGconn *conn, Oid relid, const char *alter_sql)
 
 	initStringInfo(&sql);
 
-	printfStringInfo(&sql, "ALTER TABLE repack.table_%u %s", relid, alter_sql);
+	printfStringInfo(&sql, "ALTER TABLE migrate.table_%u %s", relid, alter_sql);
 
 	elog(INFO, "%s", sql.data);
 	res = pgut_execute_elevel(conn, sql.data, 0, NULL, DEBUG2);
@@ -2033,9 +2033,7 @@ apply_alter_statement(PGconn *conn, Oid relid, const char *alter_sql)
 }
 
 /* Obtain an advisory lock on the table's OID, to make sure no other
- * pg_repack is working on the table. This is not so much a concern with
- * full-table repacks, but mainly so that index-only repacks don't interfere
- * with each other or a full-table repack.
+ * pg_migrate is working on the table.
  */
 static bool advisory_lock(PGconn *conn, const char *relid)
 {
@@ -2043,7 +2041,7 @@ static bool advisory_lock(PGconn *conn, const char *relid)
 	bool			ret = false;
 	const char	   *params[2];
 
-	params[0] = REPACK_LOCK_PREFIX_STR;
+	params[0] = MIGRATE_LOCK_PREFIX_STR;
 	params[1] = relid;
 
 	/* For the 2-argument form of pg_try_advisory_lock, we need to
@@ -2058,7 +2056,7 @@ static bool advisory_lock(PGconn *conn, const char *relid)
 		elog(ERROR, "%s",  PQerrorMessage(connection));
 	}
 	else if (strcmp(getstr(res, 0, 0), "t") != 0) {
-		elog(ERROR, "Another pg_repack command may be running on the table. Please try again later.");
+		elog(ERROR, "Another pg_migrate command may be running on the table. Please try again later.");
 	}
 	else {
 		ret = true;
@@ -2096,7 +2094,7 @@ lock_exclusive(PGconn *conn, const char *relid, const char *lock_query, bool sta
 		if (start_xact)
 			pgut_command(conn, "BEGIN ISOLATION LEVEL READ COMMITTED", 0, NULL);
 		else
-			pgut_command(conn, "SAVEPOINT repack_sp1", 0, NULL);
+			pgut_command(conn, "SAVEPOINT migrate_sp1", 0, NULL);
 
 		duration = time(NULL) - start;
 		if (duration > wait_timeout)
@@ -2110,7 +2108,7 @@ lock_exclusive(PGconn *conn, const char *relid, const char *lock_query, bool sta
 				if (start_xact)
 					pgut_rollback(conn);
 				else
-					pgut_command(conn, "ROLLBACK TO SAVEPOINT repack_sp1", 0, NULL);
+					pgut_command(conn, "ROLLBACK TO SAVEPOINT migrate_sp1", 0, NULL);
 				break;
 			}
 			else
@@ -2156,7 +2154,7 @@ lock_exclusive(PGconn *conn, const char *relid, const char *lock_query, bool sta
 			if (start_xact)
 				pgut_rollback(conn);
 			else
-				pgut_command(conn, "ROLLBACK TO SAVEPOINT repack_sp1", 0, NULL);
+				pgut_command(conn, "ROLLBACK TO SAVEPOINT migrate_sp1", 0, NULL);
 			continue;
 		}
 		else
@@ -2184,7 +2182,7 @@ strpos(char *hay, char *needle)
    return -1;
 }
 
-// TODO import lib/repack.h instead of duplicating these here, had a linker error
+// TODO import lib/migrate.h instead of duplicating these here, had a linker error
 static char *
 parse_error(const char * original_sql)
 {
@@ -2379,11 +2377,11 @@ parse_indexdef(IndexDef *stmt, char *sql, const char *idxname, const char *tblna
 	elog(DEBUG2, "indexdef.where   = %s", stmt->where);
 }
 
-/* This function calls to repack_drop() to clean temporary objects on error
+/* This function calls to migrate_drop() to clean temporary objects on error
  * in creation of temporary objects.
  */
 void
-repack_cleanup_callback(bool fatal, void *userdata)
+migrate_cleanup_callback(bool fatal, void *userdata)
 {
 	Oid			target_table = *(Oid *) userdata;
 	const char *params[2];
@@ -2396,11 +2394,11 @@ repack_cleanup_callback(bool fatal, void *userdata)
 		params[1] = utoa(temp_obj_num, num_buff);
 
 		/* testing PQstatus() of connection and conn2, as we do
-		 * in repack_cleanup(), doesn't seem to work here,
+		 * in migrate_cleanup(), doesn't seem to work here,
 		 * so just use an unconditional reconnect().
 		 */
 		reconnect(ERROR);
-		command("SELECT repack.repack_drop($1, $2)", 2, params);
+		command("SELECT migrate.migrate_drop($1, $2)", 2, params);
 		temp_obj_num = 0; /* reset temporary object counter after cleanup */
 	}
 }
@@ -2410,7 +2408,7 @@ repack_cleanup_callback(bool fatal, void *userdata)
  * objects before the program exits.
  */
 static void
-repack_cleanup(bool fatal, const repack_table *table)
+migrate_cleanup(bool fatal, const migrate_table *table)
 {
 	if (fatal)
 	{
@@ -2430,7 +2428,7 @@ repack_cleanup(bool fatal, const repack_table *table)
 		/* do cleanup */
 		params[0] = utoa(table->target_oid, buffer);
 		params[1] =  utoa(temp_obj_num, num_buff);
-		command("SELECT repack.repack_drop($1, $2)", 2, params);
+		command("SELECT migrate.migrate_drop($1, $2)", 2, params);
 		temp_obj_num = 0; /* reset temporary object counter after cleanup */
 	}
 }
@@ -2467,7 +2465,7 @@ repack_table_indexes(PGresult *index_details)
 		ereport(ERROR, (errcode(ENOMEM),
 						errmsg("Unable to calloc repacked_indexes")));
 
-	/* Check if any concurrent pg_repack command is being run on the same
+	/* Check if any concurrent pg_migrate command is being run on the same
 	 * table.
 	 */
 	if (!advisory_lock(connection, params[1]))
@@ -2504,7 +2502,7 @@ repack_table_indexes(PGresult *index_details)
 						 errmsg("Cannot create index \"%s\".\"index_%u\", "
 								"already exists", schema_name, index),
 						 errdetail("An invalid index may have been left behind"
-								   " by a previous pg_repack on the table"
+								   " by a previous pg_migrate on the table"
 								   " which was interrupted. Please use DROP "
 								   "INDEX \"%s\".\"index_%u\""
 								   " to remove this index and try again.",
@@ -2516,7 +2514,7 @@ repack_table_indexes(PGresult *index_details)
 				continue;
 
 			params[0] = utoa(index, buffer[0]);
-			res = execute("SELECT repack.repack_indexdef($1, $2, $3, true)", 3,
+			res = execute("SELECT migrate.migrate_indexdef($1, $2, $3, true)", 3,
 						  params);
 
 			if (PQntuples(res) < 1)
@@ -2572,7 +2570,7 @@ repack_table_indexes(PGresult *index_details)
 		goto drop_idx;
 	}
 
-	/* take an exclusive lock on table before calling repack_index_swap() */
+	/* take an exclusive lock on table before calling migrate_index_swap() */
 	resetStringInfo(&sql);
 	appendStringInfo(&sql, "LOCK TABLE %s IN ACCESS EXCLUSIVE MODE",
 					 table_name);
@@ -2589,7 +2587,7 @@ repack_table_indexes(PGresult *index_details)
 		if (repacked_indexes[i])
 		{
 			params[0] = utoa(index, buffer[0]);
-			pgut_command(connection, "SELECT repack.repack_index_swap($1)", 1,
+			pgut_command(connection, "SELECT migrate.migrate_index_swap($1)", 1,
 						 params);
 		}
 		else
@@ -2652,7 +2650,7 @@ repack_all_indexes(char *errbuf, size_t errsize)
 	if (r_index.head)
 	{
 		appendStringInfoString(&sql,
-			"SELECT repack.oid2text(i.oid), idx.indexrelid, idx.indisvalid, idx.indrelid, repack.oid2text(idx.indrelid), n.nspname"
+			"SELECT migrate.oid2text(i.oid), idx.indexrelid, idx.indisvalid, idx.indrelid, migrate.oid2text(idx.indrelid), n.nspname"
 			" FROM pg_index idx JOIN pg_class i ON i.oid = idx.indexrelid"
 			" JOIN pg_namespace n ON n.oid = i.relnamespace"
 			" WHERE idx.indexrelid = $1::regclass ORDER BY indisvalid DESC, i.relname, n.nspname");
@@ -2662,7 +2660,7 @@ repack_all_indexes(char *errbuf, size_t errsize)
 	else if (table_list.head || parent_table_list.head)
 	{
 		appendStringInfoString(&sql,
-			"SELECT repack.oid2text(i.oid), idx.indexrelid, idx.indisvalid, idx.indrelid, $1::text, n.nspname"
+			"SELECT migrate.oid2text(i.oid), idx.indexrelid, idx.indisvalid, idx.indrelid, $1::text, n.nspname"
 			" FROM pg_index idx JOIN pg_class i ON i.oid = idx.indexrelid"
 			" JOIN pg_namespace n ON n.oid = i.relnamespace"
 			" WHERE idx.indrelid = $1::regclass ORDER BY indisvalid DESC, i.relname, n.nspname");
@@ -2676,7 +2674,7 @@ repack_all_indexes(char *errbuf, size_t errsize)
 			/* find children of this parent table */
 			res = execute_elevel("SELECT quote_ident(n.nspname) || '.' || quote_ident(c.relname)"
 								 " FROM pg_class c JOIN pg_namespace n on n.oid = c.relnamespace"
-								 " WHERE c.oid = ANY (repack.get_table_and_inheritors($1::regclass))"
+								 " WHERE c.oid = ANY (migrate.get_table_and_inheritors($1::regclass))"
 								 " ORDER BY n.nspname, c.relname", 1, params, DEBUG2);
 
 			if (PQresultStatus(res) != PGRES_TUPLES_OK)
@@ -2745,7 +2743,7 @@ cleanup:
 void
 pgut_help(bool details)
 {
-	printf("%s re-organizes a PostgreSQL database.\n\n", PROGRAM_NAME);
+	printf("%s migrates a PostgreSQL table avoiding long locks.\n\n", PROGRAM_NAME);
 	printf("Usage:\n");
 	printf("  %s [OPTION]... [DBNAME]\n", PROGRAM_NAME);
 
@@ -2756,5 +2754,6 @@ pgut_help(bool details)
 	printf("  -t, --table=TABLE         table to target\n");
 	printf("  -d, --database=DATABASE   database in which the table lives\n");
 	printf("  -a, --alter=ALTER         SQL of the alter statement\n");
+	printf("  -N, --execute             whether to run the migration\n");
 
 }

@@ -1,5 +1,5 @@
 #
-# pg_repack: Makefile
+# pg_migrate: Makefile
 #
 #  Portions Copyright (c) 2008-2011, NIPPON TELEGRAPH AND TELEPHONE CORPORATION
 #  Portions Copyright (c) 2011, Itagaki Takahiro
@@ -7,7 +7,7 @@
 #
 
 PG_CONFIG ?= pg_config
-EXTENSION = pg_repack
+EXTENSION = pg_migrate
 
 .PHONY: dist/$(EXTENSION)-$(EXTVERSION).zip
 

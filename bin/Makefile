@@ -1,5 +1,5 @@
 #
-# pg_repack: bin/Makefile
+# pg_migrate: bin/Makefile
 #
 #  Portions Copyright (c) 2008-2012, NIPPON TELEGRAPH AND TELEPHONE CORPORATION
 #  Portions Copyright (c) 2011, Itagaki Takahiro
@@ -8,19 +8,19 @@
 
 PG_CONFIG ?= pg_config
 
-SRCS = pg_repack.c pgut/pgut.c pgut/pgut-fe.c
+SRCS = pg_migrate.c pgut/pgut.c pgut/pgut-fe.c
 OBJS = $(SRCS:.c=.o)
-PROGRAM = pg_repack
+PROGRAM = pg_migrate
 
 
 # The version number of the program. It should be the same of the library.
-REPACK_VERSION = $(shell grep '"version":' ../META.json | head -1 \
+MIGRATE_VERSION = $(shell grep '"version":' ../META.json | head -1 \
 	| sed -e 's/[ 	]*"version":[ 	]*"\(.*\)",/\1/')
 
-PG_CPPFLAGS = -I$(libpq_srcdir) -DREPACK_VERSION=$(REPACK_VERSION)
+PG_CPPFLAGS = -I$(libpq_srcdir) -DMIGRATE_VERSION=$(MIGRATE_VERSION)
 
-ifdef DEBUG_REPACK
-PG_CPPFLAGS += -DDEBUG_REPACK
+ifdef DEBUG_MIGRATE
+PG_CPPFLAGS += -DDEBUG_MIGRATE
 endif
 
 PG_LIBS = $(libpq)

@@ -1,5 +1,7 @@
 /.deps/
-/pg_repack
+/pg_migrate
+!/pg_migrate.*
+/pg_migrate.o
 /results/
 /sql/init.sql
 /sql/init-*.*.sql

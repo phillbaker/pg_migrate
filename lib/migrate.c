@@ -1,5 +1,5 @@
 /*
- * pg_repack: lib/repack.c
+ * pg_migrate: lib/migrate.c
  *
  * Portions Copyright (c) 2008-2011, NIPPON TELEGRAPH AND TELEPHONE CORPORATION
  * Portions Copyright (c) 2011, Itagaki Takahiro
@@ -54,7 +54,7 @@
 #include "utils/relcache.h"
 #include "utils/syscache.h"
 
-#include "repack.h"
+#include "migrate.h"
 #include "pgut/pgut-spi.h"
 #include "pgut/pgut-be.h"
 
@@ -67,30 +67,30 @@
 
 PG_MODULE_MAGIC;
 
-extern Datum PGUT_EXPORT repack_version(PG_FUNCTION_ARGS);
-extern Datum PGUT_EXPORT repack_trigger(PG_FUNCTION_ARGS);
-extern Datum PGUT_EXPORT repack_apply(PG_FUNCTION_ARGS);
-extern Datum PGUT_EXPORT repack_get_order_by(PG_FUNCTION_ARGS);
-extern Datum PGUT_EXPORT repack_indexdef(PG_FUNCTION_ARGS);
-extern Datum PGUT_EXPORT repack_swap(PG_FUNCTION_ARGS);
-extern Datum PGUT_EXPORT repack_drop(PG_FUNCTION_ARGS);
-extern Datum PGUT_EXPORT repack_disable_autovacuum(PG_FUNCTION_ARGS);
-extern Datum PGUT_EXPORT repack_index_swap(PG_FUNCTION_ARGS);
-extern Datum PGUT_EXPORT repack_get_table_and_inheritors(PG_FUNCTION_ARGS);
+extern Datum PGUT_EXPORT migrate_version(PG_FUNCTION_ARGS);
+extern Datum PGUT_EXPORT migrate_trigger(PG_FUNCTION_ARGS);
+extern Datum PGUT_EXPORT migrate_apply(PG_FUNCTION_ARGS);
+extern Datum PGUT_EXPORT migrate_get_order_by(PG_FUNCTION_ARGS);
+extern Datum PGUT_EXPORT migrate_indexdef(PG_FUNCTION_ARGS);
+extern Datum PGUT_EXPORT migrate_swap(PG_FUNCTION_ARGS);
+extern Datum PGUT_EXPORT migrate_drop(PG_FUNCTION_ARGS);
+extern Datum PGUT_EXPORT migrate_disable_autovacuum(PG_FUNCTION_ARGS);
+extern Datum PGUT_EXPORT migrate_index_swap(PG_FUNCTION_ARGS);
+extern Datum PGUT_EXPORT migrate_get_table_and_inheritors(PG_FUNCTION_ARGS);
 
-PG_FUNCTION_INFO_V1(repack_version);
-PG_FUNCTION_INFO_V1(repack_trigger);
-PG_FUNCTION_INFO_V1(repack_apply);
-PG_FUNCTION_INFO_V1(repack_get_order_by);
-PG_FUNCTION_INFO_V1(repack_indexdef);
-PG_FUNCTION_INFO_V1(repack_swap);
-PG_FUNCTION_INFO_V1(repack_drop);
-PG_FUNCTION_INFO_V1(repack_disable_autovacuum);
-PG_FUNCTION_INFO_V1(repack_index_swap);
-PG_FUNCTION_INFO_V1(repack_get_table_and_inheritors);
+PG_FUNCTION_INFO_V1(migrate_version);
+PG_FUNCTION_INFO_V1(migrate_trigger);
+PG_FUNCTION_INFO_V1(migrate_apply);
+PG_FUNCTION_INFO_V1(migrate_get_order_by);
+PG_FUNCTION_INFO_V1(migrate_indexdef);
+PG_FUNCTION_INFO_V1(migrate_swap);
+PG_FUNCTION_INFO_V1(migrate_drop);
+PG_FUNCTION_INFO_V1(migrate_disable_autovacuum);
+PG_FUNCTION_INFO_V1(migrate_index_swap);
+PG_FUNCTION_INFO_V1(migrate_get_table_and_inheritors);
 
-static void	repack_init(void);
-static SPIPlanPtr repack_prepare(const char *src, int nargs, Oid *argtypes);
+static void	migrate_init(void);
+static SPIPlanPtr migrate_prepare(const char *src, int nargs, Oid *argtypes);
 static const char *get_quoted_relname(Oid oid);
 static const char *get_quoted_nspname(Oid oid);
 static void swap_heap_or_index_files(Oid r1, Oid r2);
@@ -127,31 +127,31 @@ must_be_superuser(const char *func)
 #define RENAME_INDEX(relid, newrelname) RenameRelationInternal(relid, newrelname, true, true);
 #endif
 
-#ifdef REPACK_VERSION
+#ifdef MIGRATE_VERSION
 /* macro trick to stringify a macro expansion */
 #define xstr(s) str(s)
 #define str(s) #s
-#define LIBRARY_VERSION xstr(REPACK_VERSION)
+#define LIBRARY_VERSION xstr(MIGRATE_VERSION)
 #else
 #define LIBRARY_VERSION "unknown"
 #endif
 
 Datum
-repack_version(PG_FUNCTION_ARGS)
+migrate_version(PG_FUNCTION_ARGS)
 {
-	return CStringGetTextDatum("pg_repack " LIBRARY_VERSION);
+	return CStringGetTextDatum("pg_migrate " LIBRARY_VERSION);
 }
 
 /**
- * @fn      Datum repack_trigger(PG_FUNCTION_ARGS)
+ * @fn      Datum migrate_trigger(PG_FUNCTION_ARGS)
  * @brief   Insert a operation log into log-table.
  *
- * repack_trigger(sql)
+ * migrate_trigger(sql)
  *
  * @param	sql	SQL to insert a operation log into log-table.
  */
 Datum
-repack_trigger(PG_FUNCTION_ARGS)
+migrate_trigger(PG_FUNCTION_ARGS)
 {
 	TriggerData	   *trigdata = (TriggerData *) fcinfo->context;
 	TupleDesc		desc;
@@ -162,14 +162,14 @@ repack_trigger(PG_FUNCTION_ARGS)
 	const char	   *sql;
 
 	/* authority check */
-	must_be_superuser("repack_trigger");
+	must_be_superuser("migrate_trigger");
 
 	/* make sure it's called as a trigger at all */
 	if (!CALLED_AS_TRIGGER(fcinfo) ||
 		!TRIGGER_FIRED_AFTER(trigdata->tg_event) ||
 		!TRIGGER_FIRED_FOR_ROW(trigdata->tg_event) ||
 		trigdata->tg_trigger->tgnargs != 1)
-		elog(ERROR, "repack_trigger: invalid trigger call");
+		elog(ERROR, "migrate_trigger: invalid trigger call");
 
 	/* retrieve parameters */
 	sql = trigdata->tg_trigger->tgargs[0];
@@ -177,7 +177,7 @@ repack_trigger(PG_FUNCTION_ARGS)
 	argtypes[0] = argtypes[1] = trigdata->tg_relation->rd_rel->reltype;
 
 	/* connect to SPI manager */
-	repack_init();
+	migrate_init();
 
 	if (TRIGGER_FIRED_BY_INSERT(trigdata->tg_event))
 	{
@@ -201,7 +201,7 @@ repack_trigger(PG_FUNCTION_ARGS)
 		values[1] = copy_tuple(tuple, desc);
 	}
 
-	/* INSERT INTO repack.log VALUES ($1, $2) */
+	/* INSERT INTO migrate.log VALUES ($1, $2) */
 	execute_with_args(SPI_OK_INSERT, sql, 2, argtypes, values, nulls);
 
 	SPI_finish();
@@ -210,10 +210,10 @@ repack_trigger(PG_FUNCTION_ARGS)
 }
 
 /**
- * @fn      Datum repack_apply(PG_FUNCTION_ARGS)
+ * @fn      Datum migrate_apply(PG_FUNCTION_ARGS)
  * @brief   Apply operations in log table into temp table.
  *
- * repack_apply(sql_peek, sql_insert, sql_delete, sql_update, sql_pop,  count)
+ * migrate_apply(sql_peek, sql_insert, sql_delete, sql_update, sql_pop,  count)
  *
  * @param	sql_peek	SQL to pop tuple from log table.
  * @param	sql_insert	SQL to insert into temp table.
@@ -224,7 +224,7 @@ repack_trigger(PG_FUNCTION_ARGS)
  * @retval				Number of performed operations.
  */
 Datum
-repack_apply(PG_FUNCTION_ARGS)
+migrate_apply(PG_FUNCTION_ARGS)
 {
 #define DEFAULT_PEEK_COUNT	1000
 
@@ -248,13 +248,13 @@ repack_apply(PG_FUNCTION_ARGS)
 	initStringInfo(&sql_pop);
 
 	/* authority check */
-	must_be_superuser("repack_apply");
+	must_be_superuser("migrate_apply");
 
 	/* connect to SPI manager */
-	repack_init();
+	migrate_init();
 
 	/* peek tuple in log */
-	plan_peek = repack_prepare(sql_peek, 1, argtypes_peek);
+	plan_peek = migrate_prepare(sql_peek, 1, argtypes_peek);
 
 	for (n = 0;;)
 	{
@@ -303,21 +303,21 @@ repack_apply(PG_FUNCTION_ARGS)
 			{
 				/* INSERT */
 				if (plan_insert == NULL)
-					plan_insert = repack_prepare(sql_insert, 1, &argtypes[2]);
+					plan_insert = migrate_prepare(sql_insert, 1, &argtypes[2]);
 				execute_plan(SPI_OK_INSERT, plan_insert, &values[2], (nulls[2] ? "n" : " "));
 			}
 			else if (nulls[2])
 			{
 				/* DELETE */
 				if (plan_delete == NULL)
-					plan_delete = repack_prepare(sql_delete, 1, &argtypes[1]);
+					plan_delete = migrate_prepare(sql_delete, 1, &argtypes[1]);
 				execute_plan(SPI_OK_DELETE, plan_delete, &values[1], (nulls[1] ? "n" : " "));
 			}
 			else
 			{
 				/* UPDATE */
 				if (plan_update == NULL)
-					plan_update = repack_prepare(sql_update, 2, &argtypes[1]);
+					plan_update = migrate_prepare(sql_update, 2, &argtypes[1]);
 				execute_plan(SPI_OK_UPDATE, plan_update, &values[1], (nulls[1] ? "n" : " "));
 			}
 
@@ -630,17 +630,17 @@ parse_indexdef_col(char *token, char **desc, char **nulls, char **collate)
 }
 
 /**
- * @fn      Datum repack_get_order_by(PG_FUNCTION_ARGS)
+ * @fn      Datum migrate_get_order_by(PG_FUNCTION_ARGS)
  * @brief   Get key definition of the index.
  *
- * repack_get_order_by(index, table)
+ * migrate_get_order_by(index, table)
  *
  * @param	index	Oid of target index.
  * @param	table	Oid of table of the index.
  * @retval			Create index DDL for temp table.
  */
 Datum
-repack_get_order_by(PG_FUNCTION_ARGS)
+migrate_get_order_by(PG_FUNCTION_ARGS)
 {
 	Oid				index = PG_GETARG_OID(0);
 	Oid				table = PG_GETARG_OID(1);
@@ -734,10 +734,10 @@ repack_get_order_by(PG_FUNCTION_ARGS)
 }
 
 /**
- * @fn      Datum repack_indexdef(PG_FUNCTION_ARGS)
+ * @fn      Datum migrate_indexdef(PG_FUNCTION_ARGS)
  * @brief   Reproduce DDL that create index at the temp table.
  *
- * repack_indexdef(index, table)
+ * migrate_indexdef(index, table)
  *
  * @param	index		Oid of target index.
  * @param	table		Oid of table of the index.
@@ -746,7 +746,7 @@ repack_get_order_by(PG_FUNCTION_ARGS)
  * @retval			Create index DDL for temp table.
  */
 Datum
-repack_indexdef(PG_FUNCTION_ARGS)
+migrate_indexdef(PG_FUNCTION_ARGS)
 {
 	Oid				index;
 	Oid				table;
@@ -771,7 +771,7 @@ repack_indexdef(PG_FUNCTION_ARGS)
 		appendStringInfo(&str, "%s CONCURRENTLY index_%u ON %s USING %s (%s)%s",
 			stmt.create, index, stmt.table, stmt.type, stmt.columns, stmt.options);
 	else
-		appendStringInfo(&str, "%s index_%u ON repack.table_%u USING %s (%s)%s",
+		appendStringInfo(&str, "%s index_%u ON migrate.table_%u USING %s (%s)%s",
 			stmt.create, index, table, stmt.type, stmt.columns, stmt.options);
 
 	/* specify the new tablespace or the original one if any */
@@ -794,11 +794,11 @@ getoid(HeapTuple tuple, TupleDesc desc, int column)
 }
 
 /**
- * @fn      Datum repack_swap(PG_FUNCTION_ARGS)
+ * @fn      Datum migrate_swap(PG_FUNCTION_ARGS)
  * @brief   Swapping relfilenode of tables and relation ids of toast tables
  *          and toast indexes.
  *
- * repack_swap(oid, relname)
+ * migrate_swap(oid, relname)
  *
  * TODO: remove useless CommandCounterIncrement().
  *
@@ -806,7 +806,7 @@ getoid(HeapTuple tuple, TupleDesc desc, int column)
  * @retval			None.
  */
 Datum
-repack_swap(PG_FUNCTION_ARGS)
+migrate_swap(PG_FUNCTION_ARGS)
 {
 	Oid				oid = PG_GETARG_OID(0);
 	const char	   *relname = get_quoted_relname(oid);
@@ -829,10 +829,10 @@ repack_swap(PG_FUNCTION_ARGS)
 	Oid				owner2;
 
 	/* authority check */
-	must_be_superuser("repack_swap");
+	must_be_superuser("migrate_swap");
 
 	/* connect to SPI manager */
-	repack_init();
+	migrate_init();
 
 	/* swap relfilenode and dependencies for tables. */
 	values[0] = ObjectIdGetDatum(oid);
@@ -844,7 +844,7 @@ repack_swap(PG_FUNCTION_ARGS)
 		"       pg_catalog.pg_class Y LEFT JOIN pg_catalog.pg_index TY"
 		"         ON Y.reltoastrelid = TY.indrelid AND TY.indisvalid"
 		" WHERE X.oid = $1"
-		"   AND Y.oid = ('repack.table_' || X.oid)::regclass",
+		"   AND Y.oid = ('migrate.table_' || X.oid)::regclass",
 		1, argtypes, values, nulls);
 
 	tuptable = SPI_tuptable;
@@ -852,7 +852,7 @@ repack_swap(PG_FUNCTION_ARGS)
 	records = SPI_processed;
 
 	if (records == 0)
-		elog(ERROR, "repack_swap : no swap target");
+		elog(ERROR, "migrate_swap : no swap target");
 
 	tuple = tuptable->vals[0];
 
@@ -885,7 +885,7 @@ repack_swap(PG_FUNCTION_ARGS)
 		" WHERE I.indrelid = $1"
 		"   AND I.indexrelid = X.oid"
 		"   AND I.indisvalid"
-		"   AND Y.oid = ('repack.index_' || X.oid)::regclass",
+		"   AND Y.oid = ('migrate.index_' || X.oid)::regclass",
 		1, argtypes, values, nulls);
 
 	tuptable = SPI_tuptable;
@@ -910,7 +910,7 @@ repack_swap(PG_FUNCTION_ARGS)
 		if (reltoastidxid1 != InvalidOid ||
 			reltoastrelid2 != InvalidOid ||
 			reltoastidxid2 != InvalidOid)
-			elog(ERROR, "repack_swap : unexpected toast relations (T1=%u, I1=%u, T2=%u, I2=%u",
+			elog(ERROR, "migrate_swap : unexpected toast relations (T1=%u, I1=%u, T2=%u, I2=%u",
 				reltoastrelid1, reltoastidxid1, reltoastrelid2, reltoastidxid2);
 		/* do nothing */
 	}
@@ -920,7 +920,7 @@ repack_swap(PG_FUNCTION_ARGS)
 
 		if (reltoastidxid1 == InvalidOid ||
 			reltoastidxid2 != InvalidOid)
-			elog(ERROR, "repack_swap : unexpected toast relations (T1=%u, I1=%u, T2=%u, I2=%u",
+			elog(ERROR, "migrate_swap : unexpected toast relations (T1=%u, I1=%u, T2=%u, I2=%u",
 				reltoastrelid1, reltoastidxid1, reltoastrelid2, reltoastidxid2);
 
 		/* rename X to Y */
@@ -957,10 +957,10 @@ repack_swap(PG_FUNCTION_ARGS)
 		CommandCounterIncrement();
 	}
 
-	/* drop repack trigger */
+	/* drop migrate trigger */
 	execute_with_format(
 		SPI_OK_UTILITY,
-		"DROP TRIGGER IF EXISTS repack_trigger ON %s.%s CASCADE",
+		"DROP TRIGGER IF EXISTS migrate_trigger ON %s.%s CASCADE",
 		nspname, relname);
 
 	SPI_finish();
@@ -969,16 +969,16 @@ repack_swap(PG_FUNCTION_ARGS)
 }
 
 /**
- * @fn      Datum repack_drop(PG_FUNCTION_ARGS)
+ * @fn      Datum migrate_drop(PG_FUNCTION_ARGS)
  * @brief   Delete temporarily objects.
  *
- * repack_drop(oid, relname)
+ * migrate_drop(oid, relname)
  *
  * @param	oid		Oid of target table.
  * @retval			None.
  */
 Datum
-repack_drop(PG_FUNCTION_ARGS)
+migrate_drop(PG_FUNCTION_ARGS)
 {
 	Oid			oid = PG_GETARG_OID(0);
 	int			numobj = PG_GETARG_INT32(1);
@@ -992,20 +992,20 @@ repack_drop(PG_FUNCTION_ARGS)
 	}
 
 	/* authority check */
-	must_be_superuser("repack_drop");
+	must_be_superuser("migrate_drop");
 
 	/* connect to SPI manager */
-	repack_init();
+	migrate_init();
 
 	/*
-	 * To prevent concurrent lockers of the repack target table from causing
+	 * To prevent concurrent lockers of the migrate target table from causing
 	 * deadlocks, take an exclusive lock on it. Consider that the following
 	 * commands take exclusive lock on tables log_xxx and the target table
-	 * itself when deleting the repack_trigger on it, while concurrent
+	 * itself when deleting the migrate_trigger on it, while concurrent
 	 * updaters require row exclusive lock on the target table and in
 	 * addition, on the log_xxx table, because of the trigger.
 	 *
-	 * Consider how a deadlock could occur - if the DROP TABLE repack.log_%u
+	 * Consider how a deadlock could occur - if the DROP TABLE migrate.log_%u
 	 * gets a lock on log_%u table before a concurrent updater could get it
 	 * but after the updater has obtained a lock on the target table, the
 	 * subsequent DROP TRIGGER ... ON target-table would report a deadlock as
@@ -1015,8 +1015,8 @@ repack_drop(PG_FUNCTION_ARGS)
 	 * Fixes deadlock mentioned in the Github issue #55.
 	 *
 	 * Skip the lock if we are not going to do anything.
-	 * Otherwise, if repack gets accidentally run twice for the same table
-	 * at the same time, the second repack, in order to perform
+	 * Otherwise, if migrate gets accidentally run twice for the same table
+	 * at the same time, the second migrate, in order to perform
 	 * a pointless cleanup, has to wait until the first one completes.
 	 * This adds an ACCESS EXCLUSIVE lock request into the queue
 	 * making the table effectively inaccessible for any other backend.
@@ -1037,7 +1037,7 @@ repack_drop(PG_FUNCTION_ARGS)
 	{
 		execute_with_format(
 			SPI_OK_UTILITY,
-			"DROP TABLE IF EXISTS repack.log_%u CASCADE",
+			"DROP TABLE IF EXISTS migrate.log_%u CASCADE",
 			oid);
 		--numobj;
 	}
@@ -1047,20 +1047,20 @@ repack_drop(PG_FUNCTION_ARGS)
 	{
 		execute_with_format(
 			SPI_OK_UTILITY,
-			"DROP TYPE IF EXISTS repack.pk_%u",
+			"DROP TYPE IF EXISTS migrate.pk_%u",
 			oid);
 		--numobj;
 	}
 
 	/*
-	 * drop repack trigger: We have already dropped the trigger in normal
+	 * drop migrate trigger: We have already dropped the trigger in normal
 	 * cases, but it can be left on error.
 	 */
 	if (numobj > 0)
 	{
 		execute_with_format(
 			SPI_OK_UTILITY,
-			"DROP TRIGGER IF EXISTS repack_trigger ON %s.%s CASCADE",
+			"DROP TRIGGER IF EXISTS migrate_trigger ON %s.%s CASCADE",
 			nspname, relname);
 		--numobj;
 	}
@@ -1070,7 +1070,7 @@ repack_drop(PG_FUNCTION_ARGS)
 	{
 		execute_with_format(
 			SPI_OK_UTILITY,
-			"DROP TABLE IF EXISTS repack.table_%u CASCADE",
+			"DROP TABLE IF EXISTS migrate.table_%u CASCADE",
 			oid);
 		--numobj;
 	}
@@ -1081,12 +1081,12 @@ repack_drop(PG_FUNCTION_ARGS)
 }
 
 Datum
-repack_disable_autovacuum(PG_FUNCTION_ARGS)
+migrate_disable_autovacuum(PG_FUNCTION_ARGS)
 {
 	Oid			oid = PG_GETARG_OID(0);
 
 	/* connect to SPI manager */
-	repack_init();
+	migrate_init();
 
 	execute_with_format(
 		SPI_OK_UTILITY,
@@ -1100,20 +1100,20 @@ repack_disable_autovacuum(PG_FUNCTION_ARGS)
 
 /* init SPI */
 static void
-repack_init(void)
+migrate_init(void)
 {
 	int		ret = SPI_connect();
 	if (ret != SPI_OK_CONNECT)
-		elog(ERROR, "pg_repack: SPI_connect returned %d", ret);
+		elog(ERROR, "pg_migrate: SPI_connect returned %d", ret);
 }
 
 /* prepare plan */
 static SPIPlanPtr
-repack_prepare(const char *src, int nargs, Oid *argtypes)
+migrate_prepare(const char *src, int nargs, Oid *argtypes)
 {
 	SPIPlanPtr	plan = SPI_prepare(src, nargs, argtypes);
 	if (plan == NULL)
-		elog(ERROR, "pg_repack: repack_prepare failed (code=%d, query=%s)", SPI_result, src);
+		elog(ERROR, "pg_migrate: migrate_prepare failed (code=%d, query=%s)", SPI_result, src);
 	return plan;
 }
 
@@ -1314,29 +1314,29 @@ swap_heap_or_index_files(Oid r1, Oid r2)
 }
 
 /**
- * @fn      Datum repack_index_swap(PG_FUNCTION_ARGS)
+ * @fn      Datum migrate_index_swap(PG_FUNCTION_ARGS)
  * @brief   Swap out an original index on a table with the newly-created one.
  *
- * repack_index_swap(index)
+ * migrate_index_swap(index)
  *
  * @param	index	Oid of the *original* index.
  * @retval	void
  */
 Datum
-repack_index_swap(PG_FUNCTION_ARGS)
+migrate_index_swap(PG_FUNCTION_ARGS)
 {
 	Oid                orig_idx_oid = PG_GETARG_OID(0);
-	Oid                repacked_idx_oid;
+	Oid                migrated_idx_oid;
 	StringInfoData     str;
 	SPITupleTable      *tuptable;
 	TupleDesc          desc;
 	HeapTuple          tuple;
 
 	/* authority check */
-	must_be_superuser("repack_index_swap");
+	must_be_superuser("migrate_index_swap");
 
 	/* connect to SPI manager */
-	repack_init();
+	migrate_init();
 
 	initStringInfo(&str);
 
@@ -1352,8 +1352,8 @@ repack_index_swap(PG_FUNCTION_ARGS)
 	tuptable = SPI_tuptable;
 	desc = tuptable->tupdesc;
 	tuple = tuptable->vals[0];
-	repacked_idx_oid = getoid(tuple, desc, 1);
-	swap_heap_or_index_files(orig_idx_oid, repacked_idx_oid);
+	migrated_idx_oid = getoid(tuple, desc, 1);
+	swap_heap_or_index_files(orig_idx_oid, migrated_idx_oid);
 	SPI_finish();
 	PG_RETURN_VOID();
 }
@@ -1369,7 +1369,7 @@ repack_index_swap(PG_FUNCTION_ARGS)
  * @retval	regclass[]
  */
 Datum
-repack_get_table_and_inheritors(PG_FUNCTION_ARGS)
+migrate_get_table_and_inheritors(PG_FUNCTION_ARGS)
 {
 	Oid			parent = PG_GETARG_OID(0);
 	List	   *relations;

@@ -1,5 +1,5 @@
-#ifndef REPACK_H
-#define REPACK_H
+#ifndef MIGRATE_H
+#define MIGRATE_H
 
 /*
  * Parsed CREATE INDEX statement. You can rebuild sql using
