@@ -792,27 +792,27 @@ repack_one_database(const char *orderby, char *errbuf, size_t errsize)
 		appendStringInfoString(&sql, "pkid IS NOT NULL");
 	}
 
-	// /* Exclude tables which belong to extensions */
-	// if (exclude_extension_list.head)
-	// {
-	// 	appendStringInfoString(&sql, " AND t.relid NOT IN"
-	// 								 "  (SELECT d.objid::regclass"
-	// 								 "   FROM pg_depend d JOIN pg_extension e"
-	// 								 "   ON d.refobjid = e.oid"
-	// 								 "   WHERE d.classid = 'pg_class'::regclass AND (");
+	/* Exclude tables which belong to extensions */
+	if (exclude_extension_list.head)
+	{
+		appendStringInfoString(&sql, " AND t.relid NOT IN"
+									 "  (SELECT d.objid::regclass"
+									 "   FROM pg_depend d JOIN pg_extension e"
+									 "   ON d.refobjid = e.oid"
+									 "   WHERE d.classid = 'pg_class'::regclass AND (");
 
-	// 	/* List all excluded extensions */
-	// 	for (cell = exclude_extension_list.head; cell; cell = cell->next)
-	// 	{
-	// 		appendStringInfo(&sql, "e.extname = $%d", iparam + 1);
-	// 		params[iparam++] = cell->val;
+		/* List all excluded extensions */
+		for (cell = exclude_extension_list.head; cell; cell = cell->next)
+		{
+			appendStringInfo(&sql, "e.extname = $%d", iparam + 1);
+			params[iparam++] = cell->val;
 
-	// 		appendStringInfoString(&sql, cell->next ? " OR " : ")");
-	// 	}
+			appendStringInfoString(&sql, cell->next ? " OR " : ")");
+		}
 
-	// 	/* Close subquery */
-	// 	appendStringInfoString(&sql, ")");
-	// }
+		/* Close subquery */
+		appendStringInfoString(&sql, ")");
+	}
 
 	/* Ensure the regression tests get a consistent ordering of tables */
 	appendStringInfoString(&sql, " ORDER BY t.relname, t.schemaname");
@@ -849,8 +849,11 @@ repack_one_database(const char *orderby, char *errbuf, size_t errsize)
 		const char *tablespace;
 		const char *ckey;
 		int			c = 0;
+		int			dependent_views = 0;
+		PGresult   *view_check_res;
 
 		table.target_name = getstr(res, i, c++);
+		elog(DEBUG2, "table: %s", table.target_name);
 		table.target_oid = getoid(res, i, c++);
 		table.target_toast = getoid(res, i, c++);
 		table.target_tidx = getoid(res, i, c++);
@@ -859,8 +862,6 @@ repack_one_database(const char *orderby, char *errbuf, size_t errsize)
 		table.ckid = getoid(res, i, c++);
 
 		if (table.pkid == 0) {
-			// TODO check for views referencing the table
-			// TODO check for stored procedures referencing the table
 			ereport(WARNING,
 					(errcode(E_PG_COMMAND),
 					 errmsg("relation \"%s\" must have a primary key or not-null unique keys", table.target_name)));
@@ -887,6 +888,42 @@ repack_one_database(const char *orderby, char *errbuf, size_t errsize)
 		table.sql_update = getstr(res, i, c++);
 		table.sql_pop = getstr(res, i, c++);
 		tablespace = getstr(res, i, c++);
+
+		/* check for views referencing the table */
+		resetStringInfo(&sql);
+		printfStringInfo(&sql,
+			"SELECT distinct v.oid::regclass AS view"
+			" FROM pg_depend AS d "
+			"   JOIN pg_rewrite AS r "
+			"      ON r.oid = d.objid"
+			"   JOIN pg_class AS v "
+			"      ON v.oid = r.ev_class"
+			" WHERE v.relkind = 'v'"
+			"  AND d.classid = 'pg_rewrite'::regclass"
+			"  AND d.refclassid = 'pg_class'::regclass"
+			"  AND d.deptype = 'n'"
+  			"  AND d.refobjid = '%s'::regclass",
+			table.target_name);
+
+		view_check_res = execute_elevel(sql.data, 0, NULL, DEBUG2);
+		/* on error skip the table */
+		if (PQresultStatus(view_check_res) != PGRES_TUPLES_OK)
+		{
+			/* Return the error message otherwise */
+			if (errbuf)
+				snprintf(errbuf, errsize, "%s", PQerrorMessage(connection));
+			goto cleanup;
+		}
+
+		dependent_views = PQntuples(view_check_res);
+		if (dependent_views > 0) {
+			ereport(WARNING,
+					(errcode(E_PG_COMMAND),
+					 errmsg("the table \"%s\" has %d views depending on it. this tool does not currently support migrating tables with dependent views.", table.target_name, dependent_views)));
+			CLEARPGRES(view_check_res);
+			continue;
+		}
+		CLEARPGRES(view_check_res);
 
 		/* Craft CREATE TABLE SQL */
 		resetStringInfo(&sql);

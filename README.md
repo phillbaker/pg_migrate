@@ -30,6 +30,7 @@ Postgres >= 9.6
 
 * Unique constraints are converted into unique indexes, [they are equivalent in Postgres](https://stackoverflow.com/questions/23542794/postgres-unique-constraint-vs-index). However, this may be an unexpected change.
 * Index names on the target table are changed during the migration.
-* If the target table is used in views or stored procedures, those objects will continue to reference the original table - this is not supported currently.
+* If the target table is used in views, those objects will continue to reference the original table - this is not supported currently.
+  * If the target table is used in stored procedures, those functions are stored as text so are not linked through object IDs and will reference the migrated table.
 * DDL to drop columns from tables is not currently supported.
 
