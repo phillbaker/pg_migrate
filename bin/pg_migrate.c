@@ -1653,40 +1653,45 @@ migrate_one_table(migrate_table *table, const char *orderby, char *errbuf, size_
     }
     char *original_primary_key_def;
     const char *original_primary_key_name;
-    original_primary_key_def = getstr(res, 0, 0);
-    original_primary_key_name = getstr(res, 0, 1);
-    CLEARPGRES(res);
-    elog(DEBUG2, "original_primary_key_def  :  %s", original_primary_key_def);
-    elog(DEBUG2, "original_primary_key_name  :  %s", original_primary_key_name);
+    const char *backing_index_name = NULL;
+    int primary_key = PQntuples(res);
 
-	IndexDef		stmt;
-	parse_indexdef(&stmt, original_primary_key_def, original_primary_key_name, table->target_name);
-	// iterate through indexes and see which one matches the original_primary_key_def
-	const char *backing_index_name = NULL;
-	for (j = 0; j < table->n_indexes; j++)
-	{
-		StringInfoData	index_sql;
-		initStringInfo(&index_sql);
-		printfStringInfo(&index_sql, "ON migrate.table_%u USING %s (%s)%s",
-			table->target_oid, stmt.type, stmt.columns, stmt.options);
-		char *original_create_index = strdup(table->indexes[j].create_index);
-		if (strpos(original_create_index, index_sql.data) >= 0)
+    if (primary_key > 0) {
+	    original_primary_key_def = getstr(res, 0, 0);
+	    original_primary_key_name = getstr(res, 0, 1);
+	    CLEARPGRES(res);
+	    elog(DEBUG2, "original_primary_key_def  :  %s", original_primary_key_def);
+	    elog(DEBUG2, "original_primary_key_name  :  %s", original_primary_key_name);
+
+		IndexDef		stmt;
+		parse_indexdef(&stmt, original_primary_key_def, original_primary_key_name, table->target_name);
+		/* iterate through indexes and see which one
+		 * matches the original_primary_key_def */
+		for (j = 0; j < table->n_indexes; j++)
 		{
-			resetStringInfo(&index_sql);
-			printfStringInfo(&index_sql, "index_%u", table->indexes[j].target_oid);
-			backing_index_name = index_sql.data;
-			break;
+			StringInfoData	index_sql;
+			initStringInfo(&index_sql);
+			printfStringInfo(&index_sql, "ON migrate.table_%u USING %s (%s)%s",
+				table->target_oid, stmt.type, stmt.columns, stmt.options);
+			char *original_create_index = strdup(table->indexes[j].create_index);
+			if (strpos(original_create_index, index_sql.data) >= 0)
+			{
+				resetStringInfo(&index_sql);
+				printfStringInfo(&index_sql, "index_%u", table->indexes[j].target_oid);
+				backing_index_name = index_sql.data;
+				break;
+			}
+		}
+
+		if (backing_index_name == NULL)
+		{
+			elog(DEBUG2, "aborting, couldn't determine migrated primary key");
+			goto cleanup;
 		}
 	}
 
 	/* don't clear indexes until after done accessing table->indexes or memory corrupts */
 	CLEARPGRES(indexres);
-
-	if (backing_index_name == NULL)
-	{
-		elog(DEBUG2, "aborting, couldn't determine migrated primary key");
-		goto cleanup;
-	}
 
 	/* Find existing foreign keys. */
 	resetStringInfo(&sql);
@@ -1783,11 +1788,12 @@ migrate_one_table(migrate_table *table, const char *orderby, char *errbuf, size_
 
 	apply_log(conn2, table, 0);
 
-	resetStringInfo(&sql);
-	printfStringInfo(&sql, "ALTER TABLE migrate.table_%u ADD PRIMARY KEY USING INDEX %s", table->target_oid, backing_index_name);
-	elog(DEBUG2, "--- %s", sql.data);
-	// command(sql.data, 0, NULL);
-	pgut_command(conn2, sql.data, 0, NULL);
+	if (primary_key > 0) {
+		resetStringInfo(&sql);
+		printfStringInfo(&sql, "ALTER TABLE migrate.table_%u ADD PRIMARY KEY USING INDEX %s", table->target_oid, backing_index_name);
+		elog(DEBUG2, "--- %s", sql.data);
+		pgut_command(conn2, sql.data, 0, NULL);
+	}
 
 	resetStringInfo(&sql);
 	printfStringInfo(&sql, "ALTER TABLE %s RENAME TO %s_pre_migrate_%u", table->target_name, table_without_namespace, table->target_oid);
