@@ -1526,7 +1526,7 @@ migrate_one_table(migrate_table *table, const char *orderby, char *errbuf, size_
 	 */
 	elog(DEBUG2, "---- create temp table ----");
 	resetStringInfo(&sql);
-	/* Use a different create tble statement that includes null restrictiona and
+	/* Use a different create table statement that includes null restrictions and
 	 * defaults. */
 	printfStringInfo(&sql, "SELECT migrate.get_create_table_statement('%s', '%s', 'migrate.table_%u')", schema, table_without_namespace, table->target_oid);
 	res = execute(sql.data, 0, NULL);

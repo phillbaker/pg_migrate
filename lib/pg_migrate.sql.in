@@ -239,9 +239,10 @@ DECLARE
 BEGIN
     FOR column_record IN
         SELECT
-            b.nspname as schema_name,
-            b.relname as table_name,
-            a.attname as column_name,
+            row_number() OVER () as row_number,
+            quote_ident(b.nspname) as schema_name,
+            quote_ident(b.relname) as table_name,
+            quote_ident(a.attname) as column_name,
             pg_catalog.format_type(a.atttypid, a.atttypmod) as column_type,
             CASE WHEN
                 (SELECT substring(pg_catalog.pg_get_expr(d.adbin, d.adrelid) for 128)
@@ -286,7 +287,7 @@ BEGIN
           AND NOT a.attisdropped
         ORDER BY a.attnum
     LOOP
-        IF column_record.attnum = 1 THEN
+        IF column_record.row_number = 1 THEN
             table_ddl := 'CREATE TABLE ' || new_table_name || ' (';
         ELSE
             table_ddl := table_ddl || ',';
