@@ -2800,5 +2800,8 @@ pgut_help(bool details)
 	printf("  -d, --database=DATABASE   database in which the table lives\n");
 	printf("  -a, --alter=ALTER         SQL of the alter statement\n");
 	printf("  -N, --execute             whether to run the migration\n");
-
+	printf("  -j, --jobs=NUM            Use this many parallel jobs for each table\n");
+	printf("  -T, --wait-timeout=SECS   timeout to cancel other backends on conflict\n");
+	printf("  -D, --no-kill-backend     don't kill other backends when timed out\n");
+	printf("  -k, --no-superuser-check  skip superuser checks in client\n");
 }
