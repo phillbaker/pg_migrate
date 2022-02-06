@@ -367,7 +367,7 @@ CREATE VIEW migrate.tables AS
      AND N.nspname NOT IN ('pg_catalog', 'information_schema')
      AND N.nspname NOT LIKE E'pg\\_temp\\_%';
 
-CREATE FUNCTION migrate.migrate_indexdef(oid, oid, name, bool) RETURNS text AS
+CREATE FUNCTION migrate.migrate_indexdef(oid, oid, name, bool, text) RETURNS text AS
 'MODULE_PATHNAME', 'migrate_indexdef'
 LANGUAGE C STABLE;
 

@@ -184,6 +184,7 @@ typedef struct migrate_index
 {
 	Oid				target_oid;		/* target: OID */
 	const char	   *create_index;	/* CREATE INDEX */
+	const char	   *hash;	/* CREATE INDEX */
 	index_status_t  status; 		/* Track parallel build statuses. */
 	int             worker_idx;		/* which worker conn is handling */
 } migrate_index;
@@ -230,6 +231,7 @@ typedef struct migrate_foreign_key
 	const char *foreign_table_schema;
 	const char *foreign_table_name;
 	const char *foreign_column_name;
+	const char *hash;
 } migrate_foreign_key;
 
 typedef struct IndexDef
@@ -1227,7 +1229,7 @@ migrate_one_table(migrate_table *table, const char *orderby, char *errbuf, size_
 	StringInfoData	sql;
 	bool            ret = false;
 	PGresult       *indexres = NULL;
-	const char     *indexparams[2];
+	const char     *indexparams[3];
 	const char	   *create_table;
 	char		    indexbuffer[12];
 	int             j;
@@ -1307,6 +1309,7 @@ migrate_one_table(migrate_table *table, const char *orderby, char *errbuf, size_
 
 	indexparams[0] = utoa(table->target_oid, indexbuffer);
 	indexparams[1] = moveidx ? tablespace : NULL;
+	indexparams[2] = table->target_name;
 
 	/* First, just display a warning message for any invalid indexes
 	 * which may be on the table (mostly to match the behavior of 1.1.8).
@@ -1325,9 +1328,10 @@ migrate_one_table(migrate_table *table, const char *orderby, char *errbuf, size_
 
 	indexres = execute(
 		"SELECT indexrelid,"
-		" migrate.migrate_indexdef(indexrelid, indrelid, $2, FALSE) "
+		" migrate.migrate_indexdef(indexrelid, indrelid, $2, FALSE, left(md5($3), 5)), "
+		" left(md5($3), 5) "
 		" FROM pg_index WHERE indrelid = $1 AND indisvalid",
-		2, indexparams);
+		3, indexparams);
 
 	table->n_indexes = PQntuples(indexres);
 	table->indexes = pgut_malloc(table->n_indexes * sizeof(migrate_index));
@@ -1336,6 +1340,7 @@ migrate_one_table(migrate_table *table, const char *orderby, char *errbuf, size_
 	{
 		table->indexes[j].target_oid = getoid(indexres, j, 0);
 		table->indexes[j].create_index = getstr(indexres, j, 1);
+		table->indexes[j].hash = getstr(indexres, j, 2);
 		table->indexes[j].status = UNPROCESSED;
 		table->indexes[j].worker_idx = -1; /* Unassigned */
 	}
@@ -1677,7 +1682,7 @@ migrate_one_table(migrate_table *table, const char *orderby, char *errbuf, size_
 			if (strpos(original_create_index, index_sql.data) >= 0)
 			{
 				resetStringInfo(&index_sql);
-				printfStringInfo(&index_sql, "index_%u", table->indexes[j].target_oid);
+				printfStringInfo(&index_sql, "%s_%s", stmt.index, table->indexes[j].hash);
 				backing_index_name = index_sql.data;
 				break;
 			}
@@ -1703,7 +1708,8 @@ migrate_one_table(migrate_table *table, const char *orderby, char *errbuf, size_
 		"    kcu.column_name,"
 		"    ccu.table_schema AS foreign_table_schema,"
 		"    ccu.table_name AS foreign_table_name,"
-		"    ccu.column_name AS foreign_column_name"
+		"    ccu.column_name AS foreign_column_name,"
+		"    left(md5(ccu.table_schema || '.' || ccu.table_name), 5)"
 		" FROM"
 		"    information_schema.table_constraints AS tc"
 		"    JOIN information_schema.key_column_usage AS kcu"
@@ -1744,15 +1750,16 @@ migrate_one_table(migrate_table *table, const char *orderby, char *errbuf, size_
 		foreign_keys[j].foreign_table_schema = getstr(res, j, c++);
 		foreign_keys[j].foreign_table_name = getstr(res, j, c++);
 		foreign_keys[j].foreign_column_name = getstr(res, j, c++);
+		foreign_keys[j].hash = getstr(res, j, c++);
 
 		resetStringInfo(&sql);
 		printfStringInfo(&sql,
-			"ALTER TABLE %s.%s ADD CONSTRAINT %s_%u "
+			"ALTER TABLE %s.%s ADD CONSTRAINT %s_%s "
 			"FOREIGN KEY (%s) REFERENCES migrate.table_%u (%s) NOT VALID",
 			foreign_keys[j].table_schema,
 			foreign_keys[j].table_name,
 			foreign_keys[j].constraint_name,
-			table->target_oid, // TODO handle duplicate fk names/truncations from > 63 chars
+			foreign_keys[j].hash, // TODO handle duplicate fk names/truncations from > 63 chars
 			foreign_keys[j].column_name,
 			table->target_oid, // instead of foreign_table_name
 			foreign_keys[j].foreign_column_name);
@@ -1825,11 +1832,11 @@ migrate_one_table(migrate_table *table, const char *orderby, char *errbuf, size_
 	{
 		resetStringInfo(&sql);
 		printfStringInfo(&sql,
-			"ALTER TABLE %s.%s VALIDATE CONSTRAINT %s_%u",
+			"ALTER TABLE %s.%s VALIDATE CONSTRAINT %s_%s",
 			foreign_keys[j].table_schema,
 			foreign_keys[j].table_name,
 			foreign_keys[j].constraint_name,
-			table->target_oid);
+			foreign_keys[j].hash);
 		elog(DEBUG2, "--- %s", sql.data);
 		pgut_command(conn2, sql.data, 0, NULL);
 	}
@@ -2488,7 +2495,7 @@ repack_table_indexes(PGresult *index_details)
 	PGresult			*res = NULL, *res2 = NULL;
 	StringInfoData		sql, sql_drop;
 	char				buffer[2][12];
-	const char			*create_idx, *schema_name, *table_name, *params[3];
+	const char			*create_idx, *schema_name, *table_name, *params[4];
 	Oid					table, index;
 	int					i, num, num_repacked = 0;
 	bool                *repacked_indexes;
@@ -2502,6 +2509,7 @@ repack_table_indexes(PGresult *index_details)
 	schema_name = getstr(index_details, 0, 5);
 	/* table_name is schema-qualified */
 	table_name = getstr(index_details, 0, 4);
+	params[3] = table_name;
 
 	/* Keep track of which of the table's indexes we have successfully
 	 * repacked, so that we may DROP only those indexes.
@@ -2559,7 +2567,7 @@ repack_table_indexes(PGresult *index_details)
 				continue;
 
 			params[0] = utoa(index, buffer[0]);
-			res = execute("SELECT migrate.migrate_indexdef($1, $2, $3, true)", 3,
+			res = execute("SELECT migrate.migrate_indexdef($1, $2, $3, true, left(md5($4), 5))", 4,
 						  params);
 
 			if (PQntuples(res) < 1)

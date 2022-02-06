@@ -101,6 +101,10 @@ static void swap_heap_or_index_files(Oid r1, Oid r2);
 #define IsToken(c) \
 	(IS_HIGHBIT_SET((c)) || isalnum((unsigned char) (c)) || (c) == '_')
 
+/* convert text pointer to C string */
+#define TEXT_TO_CSTRING(textp) \
+    DatumGetCString(DirectFunctionCall1(textout, PointerGetDatum(textp)))
+
 /* check access authority */
 static void
 must_be_superuser(const char *func)
@@ -743,6 +747,7 @@ migrate_get_order_by(PG_FUNCTION_ARGS)
  * @param	table		Oid of table of the index.
  * @param	tablespace	Namespace for the index. If NULL keep the original.
  * @param   boolean		Whether to use CONCURRENTLY when creating the index.
+ * @param   text		Hash to append to index name
  * @retval			Create index DDL for temp table.
  */
 Datum
@@ -753,7 +758,9 @@ migrate_indexdef(PG_FUNCTION_ARGS)
 	Name			tablespace = NULL;
 	IndexDef		stmt;
 	StringInfoData	str;
+	StringInfoData	index_builder;
 	bool			concurrent_index = PG_GETARG_BOOL(3);
+	const char      *hash = TEXT_TO_CSTRING(PG_GETARG_TEXT_P(4));
 
 	if (PG_ARGISNULL(0) || PG_ARGISNULL(1))
 		PG_RETURN_NULL();
@@ -764,15 +771,21 @@ migrate_indexdef(PG_FUNCTION_ARGS)
 	if (!PG_ARGISNULL(2))
 		tablespace = PG_GETARG_NAME(2);
 
+	const char *index_name = get_rel_name(index);
+	initStringInfo(&index_builder);
+	appendStringInfo(&index_builder, "%s_%s", index_name ? index_name : "", hash);
+	const char *index_with_hash = quote_identifier(index_builder.data);
+
 	parse_indexdef(&stmt, index, table);
 
 	initStringInfo(&str);
+
 	if (concurrent_index)
-		appendStringInfo(&str, "%s CONCURRENTLY index_%u ON %s USING %s (%s)%s",
-			stmt.create, index, stmt.table, stmt.type, stmt.columns, stmt.options);
+		appendStringInfo(&str, "%s CONCURRENTLY %s ON %s USING %s (%s)%s",
+			stmt.create, index_with_hash, stmt.table, stmt.type, stmt.columns, stmt.options);
 	else
-		appendStringInfo(&str, "%s index_%u ON migrate.table_%u USING %s (%s)%s",
-			stmt.create, index, table, stmt.type, stmt.columns, stmt.options);
+		appendStringInfo(&str, "%s %s ON migrate.table_%u USING %s (%s)%s",
+			stmt.create, index_with_hash, table, stmt.type, stmt.columns, stmt.options);
 
 	/* specify the new tablespace or the original one if any */
 	if (tablespace || stmt.tablespace)
