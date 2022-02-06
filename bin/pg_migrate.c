@@ -1664,7 +1664,7 @@ migrate_one_table(migrate_table *table, const char *orderby, char *errbuf, size_
 	    elog(DEBUG2, "original_primary_key_name  :  %s", original_primary_key_name);
 
 		IndexDef		stmt;
-		parse_indexdef(&stmt, original_primary_key_def, original_primary_key_name, table->target_name);
+		parse_indexdef(&stmt, strdup(original_primary_key_def), original_primary_key_name, table->target_name);
 		/* iterate through indexes and see which one
 		 * matches the original_primary_key_def */
 		for (j = 0; j < table->n_indexes; j++)
