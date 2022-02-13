@@ -1250,6 +1250,27 @@ migrate_one_table(migrate_table *table, const char *orderby, char *errbuf, size_
 
 	initStringInfo(&sql);
 
+	char *tmp_target_name = NULL;
+	tmp_target_name = strdup(table->target_name);
+	char *schema = strtok(tmp_target_name, ".");
+	char *table_without_namespace = strtok(NULL, ".");
+
+	resetStringInfo(&sql);
+	/* Use a different create table statement that includes null restrictions and
+	 * defaults. */
+	printfStringInfo(&sql, "SELECT migrate.get_create_table_statement('%s', '%s', 'migrate.table_%u')", schema, table_without_namespace, table->target_oid);
+	res = execute(sql.data, 0, NULL);
+
+	if (PQntuples(res) < 1)
+	{
+		elog(WARNING,
+			"unable to generate SQL to CREATE temp table");
+		goto cleanup;
+	}
+
+	create_table = pgut_strdup(getstr(res, 0, 0));
+	CLEARPGRES(res);
+
 	elog(INFO, "migrating table \"%s\"", table->target_name);
 
 	elog(DEBUG2, "---- migrate_one_table ----");
@@ -1263,7 +1284,7 @@ migrate_one_table(migrate_table *table, const char *orderby, char *errbuf, size_
 	elog(DEBUG2, "create_log        : %s", table->create_log);
 	elog(DEBUG2, "create_trigger    : %s", table->create_trigger);
 	elog(DEBUG2, "enable_trigger    : %s", table->enable_trigger);
-	elog(DEBUG2, "create_table      : %s", table->create_table);
+	elog(DEBUG2, "create_table      : %s", create_table);
 	elog(DEBUG2, "copy_data         : %s", table->copy_data);
 	elog(DEBUG2, "alter_col_storage : %s", table->alter_col_storage ?
 		 table->alter_col_storage : "(skipped)");
@@ -1521,30 +1542,10 @@ migrate_one_table(migrate_table *table, const char *orderby, char *errbuf, size_
 	if (!(lock_access_share(connection, table->target_oid, table->target_name)))
 		goto cleanup;
 
-	char *tmp_target_name = NULL;
-	tmp_target_name = strdup(table->target_name);
-	char *schema = strtok(tmp_target_name, ".");
-	char *table_without_namespace = strtok(NULL, ".");
-
 	/*
 	 * Create the new table and apply alter statement
 	 */
 	elog(DEBUG2, "---- create temp table ----");
-	resetStringInfo(&sql);
-	/* Use a different create table statement that includes null restrictions and
-	 * defaults. */
-	printfStringInfo(&sql, "SELECT migrate.get_create_table_statement('%s', '%s', 'migrate.table_%u')", schema, table_without_namespace, table->target_oid);
-	res = execute(sql.data, 0, NULL);
-
-	if (PQntuples(res) < 1)
-	{
-		elog(WARNING,
-			"unable to generate SQL to CREATE temp table");
-		goto cleanup;
-	}
-
-	create_table = getstr(res, 0, 0);
-	elog(DEBUG2, "--- %s", create_table);
 	command(create_table, 0, NULL);
 
 	if (!(apply_alter_statement(connection, table->target_oid, alter_list.head->val)))
