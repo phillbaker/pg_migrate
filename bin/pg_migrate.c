@@ -2106,7 +2106,7 @@ apply_alter_statement(PGconn *conn, Oid relid, const char *alter_sql)
 
 	printfStringInfo(&sql, "ALTER TABLE migrate.table_%u %s", relid, alter_sql);
 
-	elog(INFO, "%s", sql.data);
+	elog(INFO, "altering table with: %s", alter_sql);
 	res = pgut_execute_elevel(conn, sql.data, 0, NULL, DEBUG2);
 
 	if (PQresultStatus(res) != PGRES_COMMAND_OK) {
