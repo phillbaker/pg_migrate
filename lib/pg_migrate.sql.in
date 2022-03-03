@@ -390,6 +390,10 @@ CREATE FUNCTION migrate.disable_autovacuum(regclass) RETURNS void AS
 'MODULE_PATHNAME', 'migrate_disable_autovacuum'
 LANGUAGE C VOLATILE STRICT;
 
+CREATE FUNCTION migrate.reset_autovacuum(regclass) RETURNS void AS
+'MODULE_PATHNAME', 'migrate_reset_autovacuum'
+LANGUAGE C VOLATILE STRICT;
+
 CREATE FUNCTION migrate.migrate_apply(
   sql_peek      cstring,
   sql_insert    cstring,

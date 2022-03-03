@@ -19,3 +19,4 @@ migrate_trigger                           18
 migrate_version                           19
 migrate_index_swap                        20
 migrate_get_table_and_inheritors          21
+migrate_reset_autovacuum                  22

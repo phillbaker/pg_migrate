@@ -1551,6 +1551,40 @@ migrate_one_table(migrate_table *table, const char *orderby, char *errbuf, size_
 	if (!(apply_alter_statement(connection, table->target_oid, alter_list.head->val)))
 		goto cleanup;
 
+	/* apply alter column statemnts (if any) */
+	resetStringInfo(&sql);
+    printfStringInfo(&sql,
+            "SELECT"
+            "    c.relname,"
+            "    a.attname as column,"
+            "    array_to_string(a.attoptions, ', ') as attoptions"
+            " FROM"
+            "    pg_class c"
+            "    INNER JOIN pg_attribute a"
+            "        ON c.oid = a.attrelid  "
+            "    LEFT JOIN pg_namespace n "
+            "        ON n.oid = c.relnamespace "
+            " WHERE"
+            "    attnum > 0 AND N.nspname = '%s' AND c.relname = '%s' AND array_length(a.attoptions, 1) > 0"
+            " ORDER BY"
+            "    c.relname,"
+            "    a.attname",
+            schema, table_without_namespace);
+    elog(DEBUG2, "--- %s", sql.data);
+    res = execute(sql.data, 0, NULL);
+	for (j = 0; j < PQntuples(res); j++)
+	{
+		char *col = getstr(res, j, 1);
+		char *options = getstr(res, j, 2);
+
+		resetStringInfo(&sql);
+		printfStringInfo(&sql,
+			"ALTER TABLE migrate.table_%u ALTER %s SET (%s)",
+			table->target_oid, col, options);
+		command(sql.data, 0, NULL);
+	}
+	CLEARPGRES(res);
+
 	/*
 	 * Before copying data to the target table, we need to set the column storage
 	 * type if its storage type has been changed from the type default.
@@ -1564,9 +1598,9 @@ migrate_one_table(migrate_table *table, const char *orderby, char *errbuf, size_
 	temp_obj_num++;
 
 	printfStringInfo(&sql, "SELECT migrate.disable_autovacuum('migrate.table_%u')", table->target_oid);
+	command(sql.data, 0, NULL);
 	/* Note: We don't add dropped columns to the temp table because we're not
 	 * swapping OIDs (the data doesn't need to match) */
-	command(sql.data, 0, NULL);
 	command("COMMIT", 0, NULL);
 
 	/*
@@ -1779,6 +1813,11 @@ migrate_one_table(migrate_table *table, const char *orderby, char *errbuf, size_
 	}
 
 	CLEARPGRES(res);
+
+	/* re-enable auto vacuum */
+	// TODO only if this matches the original table setting
+	printfStringInfo(&sql, "SELECT migrate.reset_autovacuum('migrate.table_%u')", table->target_oid);
+	pgut_command(conn2, sql.data, 0, NULL);
 
 	/*
 	 * 5. Swap: will be done with conn2, since it already holds an

@@ -75,6 +75,7 @@ extern Datum PGUT_EXPORT migrate_indexdef(PG_FUNCTION_ARGS);
 extern Datum PGUT_EXPORT migrate_swap(PG_FUNCTION_ARGS);
 extern Datum PGUT_EXPORT migrate_drop(PG_FUNCTION_ARGS);
 extern Datum PGUT_EXPORT migrate_disable_autovacuum(PG_FUNCTION_ARGS);
+extern Datum PGUT_EXPORT migrate_reset_autovacuum(PG_FUNCTION_ARGS);
 extern Datum PGUT_EXPORT migrate_index_swap(PG_FUNCTION_ARGS);
 extern Datum PGUT_EXPORT migrate_get_table_and_inheritors(PG_FUNCTION_ARGS);
 
@@ -86,6 +87,7 @@ PG_FUNCTION_INFO_V1(migrate_indexdef);
 PG_FUNCTION_INFO_V1(migrate_swap);
 PG_FUNCTION_INFO_V1(migrate_drop);
 PG_FUNCTION_INFO_V1(migrate_disable_autovacuum);
+PG_FUNCTION_INFO_V1(migrate_reset_autovacuum);
 PG_FUNCTION_INFO_V1(migrate_index_swap);
 PG_FUNCTION_INFO_V1(migrate_get_table_and_inheritors);
 
@@ -1104,6 +1106,24 @@ migrate_disable_autovacuum(PG_FUNCTION_ARGS)
 	execute_with_format(
 		SPI_OK_UTILITY,
 		"ALTER TABLE %s SET (autovacuum_enabled = off)",
+		get_relation_name(oid));
+
+	SPI_finish();
+
+	PG_RETURN_VOID();
+}
+
+Datum
+migrate_reset_autovacuum(PG_FUNCTION_ARGS)
+{
+	Oid			oid = PG_GETARG_OID(0);
+
+	/* connect to SPI manager */
+	migrate_init();
+
+	execute_with_format(
+		SPI_OK_UTILITY,
+		"ALTER TABLE %s RESET (autovacuum_enabled)",
 		get_relation_name(oid));
 
 	SPI_finish();
