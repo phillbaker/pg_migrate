@@ -228,18 +228,20 @@ WHERE array_upper(column_storage , 1) > 0
 $$
 LANGUAGE sql STABLE STRICT;
 
--- GET a SQL text to create a table with defaultss and not null settings.
+-- GET a SQL text to create a table with defaults and not null settings.
 -- new_table_name can include a prefixed schema separated by a period.
 CREATE FUNCTION migrate.get_create_table_statement(target_schema varchar, target_table_name varchar, new_table_name varchar)
   RETURNS text AS
 $$
 DECLARE
     table_ddl   text;
+    target_oid    oid;
     column_record record;
 BEGIN
     FOR column_record IN
         SELECT
             row_number() OVER () as row_number,
+            b.oid as table_oid,
             quote_ident(b.nspname) as schema_name,
             quote_ident(b.relname) as table_name,
             quote_ident(a.attname) as column_name,
@@ -288,6 +290,7 @@ BEGIN
         ORDER BY a.attnum
     LOOP
         IF column_record.row_number = 1 THEN
+            target_oid := column_record.table_oid;
             table_ddl := 'CREATE TABLE ' || new_table_name || ' (';
         ELSE
             table_ddl := table_ddl || ',';
@@ -299,7 +302,7 @@ BEGIN
         END IF;
     END LOOP;
 
-    table_ddl := table_ddl || ');';
+    table_ddl := table_ddl || ') ' || ' WITH (' || migrate.get_storage_param(target_oid) || ');';
     RETURN table_ddl;
 END;
 $$
