@@ -17,7 +17,7 @@ INTVERSION := $(shell echo $$(($$(echo $(VERSION).0 | sed 's/\([[:digit:]]\{1,\}
 # Test suite
 #
 
-REGRESS := init_extension repack-setup repack-run after-schema repack-check nosuper tablespace ordered_indexes
+REGRESS := init_extension migrate_setup migrate_run after_schema check nosuper tablespace ordered_indexes
 
 USE_PGXS = 1	# use pgxs if not in contrib directory
 PGXS := $(shell $(PG_CONFIG) --pgxs)

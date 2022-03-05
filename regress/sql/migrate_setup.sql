@@ -1,7 +1,7 @@
 SET client_min_messages = warning;
 
 --
--- create table.
+-- create tables
 --
 
 CREATE TABLE tbl_cluster (
@@ -48,6 +48,12 @@ ALTER INDEX tbl_with_dropped_column_pkey SET (fillfactor = 75);
 ALTER TABLE tbl_with_dropped_column CLUSTER ON tbl_with_dropped_column_pkey;
 CREATE INDEX idx_c1c2 ON tbl_with_dropped_column (c1, c2) WITH (fillfactor = 75);
 CREATE INDEX idx_c2c1 ON tbl_with_dropped_column (c2, c1);
+
+CREATE TABLE tbl_with_view (
+	c1 text,
+	id integer PRIMARY KEY,
+	c2 text
+);
 
 CREATE TABLE tbl_with_dropped_toast (
 	i integer,
@@ -109,8 +115,11 @@ ALTER TABLE tbl_with_dropped_column DROP COLUMN d1;
 ALTER TABLE tbl_with_dropped_column DROP COLUMN d2;
 ALTER TABLE tbl_with_dropped_column DROP COLUMN d3;
 ALTER TABLE tbl_with_dropped_column ADD COLUMN c3 text;
-CREATE VIEW view_for_dropped_column AS
-	SELECT * FROM tbl_with_dropped_column;
+
+INSERT INTO tbl_with_view VALUES('c1', 2, 'c2');
+INSERT INTO tbl_with_view VALUES('c1', 1, 'c2');
+CREATE VIEW view_for_tbl AS
+	SELECT * FROM tbl_with_view;
 
 INSERT INTO tbl_with_dropped_toast VALUES(1, 10, 'abc');
 INSERT INTO tbl_with_dropped_toast VALUES(2, 20, sqrt(2::numeric(1000,999))::text || sqrt(3::numeric(1000,999))::text);
@@ -138,5 +147,5 @@ INSERT INTO tbl_order SELECT generate_series(50, 1, -1);
 --
 
 SELECT * FROM tbl_with_dropped_column;
-SELECT * FROM view_for_dropped_column;
+SELECT * FROM view_for_tbl;
 SELECT * FROM tbl_with_dropped_toast;

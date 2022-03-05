@@ -1,0 +1,38 @@
+--
+-- do migration
+--
+\! pg_migrate --dbname=contrib_regression --table=tbl_cluster --alter='ADD COLUMN a1 INT' --execute
+INFO: migrating table "public.tbl_cluster"
+INFO: altering table with: ADD COLUMN a1 INT
+\! pg_migrate --dbname=contrib_regression --table=tbl_badindex --alter='ADD COLUMN a1 INT' --execute
+INFO: migrating table "public.tbl_badindex"
+WARNING: skipping invalid index: CREATE UNIQUE INDEX idx_badindex_n ON public.tbl_badindex USING btree (n)
+INFO: altering table with: ADD COLUMN a1 INT
+\! pg_migrate --dbname=contrib_regression --table=tbl_gistkey --alter='ADD COLUMN a1 INT' --execute
+INFO: migrating table "public.tbl_gistkey"
+INFO: altering table with: ADD COLUMN a1 INT
+\! pg_migrate --dbname=contrib_regression --table=tbl_only_ckey --alter='ADD COLUMN a1 INT' --execute
+WARNING: relation "public.tbl_only_ckey" must have a primary key or not-null unique keys
+\! pg_migrate --dbname=contrib_regression --table=tbl_idxopts --alter='ADD COLUMN a1 INT' --execute
+INFO: migrating table "public.tbl_idxopts"
+INFO: altering table with: ADD COLUMN a1 INT
+\! pg_migrate --dbname=contrib_regression --table=tbl_only_pkey --alter='ADD COLUMN a1 INT' --execute
+INFO: migrating table "public.tbl_only_pkey"
+INFO: altering table with: ADD COLUMN a1 INT
+\! pg_migrate --dbname=contrib_regression --table=tbl_order --alter='ADD COLUMN a1 INT' --execute
+INFO: migrating table "public.tbl_order"
+INFO: altering table with: ADD COLUMN a1 INT
+\! pg_migrate --dbname=contrib_regression --table=tbl_with_dropped_column --alter='ADD COLUMN a1 INT' --execute
+INFO: migrating table "public.tbl_with_dropped_column"
+INFO: altering table with: ADD COLUMN a1 INT
+\! pg_migrate --dbname=contrib_regression --table=tbl_with_dropped_toast --alter='ADD COLUMN a1 INT' --execute
+INFO: migrating table "public.tbl_with_dropped_toast"
+INFO: altering table with: ADD COLUMN a1 INT
+\! pg_migrate --dbname=contrib_regression --table=tbl_with_view --alter='ADD COLUMN a1 INT' --execute
+WARNING: the table "public.tbl_with_view" has 1 views depending on it. this tool does not currently support migrating tables with dependent views.
+\! pg_migrate --dbname=contrib_regression --table=tbl_with_mod_column_storage --alter='ADD COLUMN a1 INT' --execute
+INFO: migrating table "public.tbl_with_mod_column_storage"
+INFO: altering table with: ADD COLUMN a1 INT
+\! pg_migrate --dbname=contrib_regression --table=tbl_with_toast --alter='ADD COLUMN a1 INT' --execute
+INFO: migrating table "public.tbl_with_toast"
+INFO: altering table with: ADD COLUMN a1 INT

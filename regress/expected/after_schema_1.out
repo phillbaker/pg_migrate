@@ -1,5 +1,5 @@
 --
--- tables schema after running repack
+-- tables schema after running migrations
 --
 \d tbl_cluster
             Table "public.tbl_cluster"
@@ -8,9 +8,10 @@
  col1   | integer                     | not null
  time   | timestamp without time zone | 
  ,")    | text                        | not null
+ a1     | integer                     | 
 Indexes:
-    "tbl_cluster_pkey" PRIMARY KEY, btree (","")", col1) WITH (fillfactor='75')
-    ",") cluster" btree ("time", length(","")"), ","")" text_pattern_ops) WITH (fillfactor='75') CLUSTER
+    "tbl_cluster_pkey_f6d2e" PRIMARY KEY, btree (","")", col1) WITH (fillfactor='75')
+    ",") cluster_f6d2e" btree ("time", length(","")"), ","")" text_pattern_ops) WITH (fillfactor='75')
 
 \d tbl_gistkey
   Table "public.tbl_gistkey"
@@ -18,9 +19,10 @@ Indexes:
 --------+---------+-----------
  id     | integer | not null
  c      | circle  | 
+ a1     | integer | 
 Indexes:
-    "tbl_gistkey_pkey" PRIMARY KEY, btree (id)
-    "cidx_circle" gist (c) CLUSTER
+    "tbl_gistkey_pkey_b253a" PRIMARY KEY, btree (id)
+    "cidx_circle_b253a" gist (c)
 
 \d tbl_only_ckey
            Table "public.tbl_only_ckey"
@@ -38,8 +40,9 @@ Indexes:
 --------+---------+-----------
  col1   | integer | not null
  ,")    | text    | 
+ a1     | integer | 
 Indexes:
-    "tbl_only_pkey_pkey" PRIMARY KEY, btree (col1)
+    "tbl_only_pkey_pkey_5e978" PRIMARY KEY, btree (col1)
 
 \d tbl_with_dropped_column
 Table "public.tbl_with_dropped_column"
@@ -49,10 +52,11 @@ Table "public.tbl_with_dropped_column"
  id     | integer | not null
  c2     | text    | 
  c3     | text    | 
+ a1     | integer | 
 Indexes:
-    "tbl_with_dropped_column_pkey" PRIMARY KEY, btree (id) WITH (fillfactor='75') CLUSTER
-    "idx_c1c2" btree (c1, c2) WITH (fillfactor='75')
-    "idx_c2c1" btree (c2, c1)
+    "tbl_with_dropped_column_pkey_f15cf" PRIMARY KEY, btree (id) WITH (fillfactor='75')
+    "idx_c1c2_f15cf" btree (c1, c2) WITH (fillfactor='75')
+    "idx_c2c1_f15cf" btree (c2, c1)
 
 \d tbl_with_dropped_toast
 Table "public.tbl_with_dropped_toast"
@@ -60,8 +64,9 @@ Table "public.tbl_with_dropped_toast"
 --------+---------+-----------
  i      | integer | not null
  j      | integer | not null
+ a1     | integer | 
 Indexes:
-    "tbl_with_dropped_toast_pkey" PRIMARY KEY, btree (i, j) CLUSTER
+    "tbl_with_dropped_toast_pkey_9550c" PRIMARY KEY, btree (i, j)
 
 \d tbl_idxopts
   Table "public.tbl_idxopts"
@@ -69,7 +74,8 @@ Indexes:
 --------+---------+-----------
  i      | integer | not null
  t      | text    | 
+ a1     | integer | 
 Indexes:
-    "tbl_idxopts_pkey" PRIMARY KEY, btree (i)
-    "idxopts_t" btree (t DESC NULLS LAST) WHERE t <> 'aaa'::text
+    "tbl_idxopts_pkey_0a789" PRIMARY KEY, btree (i)
+    "idxopts_t_0a789" btree (t DESC NULLS LAST) WHERE t <> 'aaa'::text
 

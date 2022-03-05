@@ -1,5 +1,5 @@
 --
--- tables schema after running repack
+-- tables schema after running migrations
 --
 
 \d tbl_cluster

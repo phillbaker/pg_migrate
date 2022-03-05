@@ -5,11 +5,7 @@
 - Development:
 - Bug Reports:
 
-|travis|
 
-.. |travis| image:: https://travis-ci.org/reorg/pg_repack.svg?branch=master
-    :target: https://travis-ci.org/reorg/pg_repack
-    :alt: Linux and OSX build status
 
 ## About
 
