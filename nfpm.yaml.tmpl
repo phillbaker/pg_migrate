@@ -1,0 +1,21 @@
+name: "postgresql-${PG}-pg_migrate"
+arch: "amd64"
+platform: "linux"
+version: "v${VERSION}"
+section: "default"
+priority: "extra"
+depends:
+- postgresql-${PG}
+maintainer: "phillbaker <phillbaker@retrodict.com>"
+vendor: phillbaker
+homepage: "http://example.com"
+license: "BSD"
+contents:
+- src: ./bin/pg_migrate
+  dst: /usr/lib/postgresql/${PG}/bin/pg_migrate
+- src: ./lib/pg_migrate.so
+  dst: /usr/lib/postgresql/${PG}/lib/pg_migrate.so
+- src: ./lib/pg_migrate--${VERSION}.sql
+  dst: /usr/share/postgresql/${PG}/extension/pg_migrate--${VERSION}.sql
+- src: ./lib/pg_migrate.control
+  dst: /usr/share/postgresql/${PG}/extension/pg_migrate.control
