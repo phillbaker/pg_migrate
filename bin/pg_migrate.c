@@ -205,6 +205,7 @@ typedef struct migrate_table
 	const char	   *create_trigger;	/* CREATE TRIGGER migrate_trigger */
 	const char	   *enable_trigger;	/* ALTER TABLE ENABLE ALWAYS TRIGGER migrate_trigger */
 	const char	   *create_table;	/* CREATE TABLE table AS SELECT WITH NO DATA*/
+	const char	   *tablespace;	    /* Destination TABLESPACE */
 	const char	   *copy_data;		/* INSERT INTO */
 	const char	   *alter_col_storage;	/* ALTER TABLE ALTER COLUMN SET STORAGE */
 	const char	   *drop_columns;	/* ALTER TABLE DROP COLUMNs */
@@ -293,7 +294,6 @@ static SimpleStringList	table_list = {NULL, NULL};
 static SimpleStringList	schema_list = {NULL, NULL};
 static char				*orderby = NULL;
 static char				*tablespace = NULL;
-static bool				moveidx = false;
 static SimpleStringList	r_index = {NULL, NULL};
 static bool				only_indexes = false;
 static int				wait_timeout = 60;	/* in seconds */
@@ -318,6 +318,7 @@ static pgut_option options[] =
 	{ 'l', 't', "table", &table_list },
 	{ 'l', 'a', "alter", &alter_list },
 	{ 'l', 's', "schema", &schema_list },
+	{ 's', 's', "tablespace", &tablespace },
 	{ 'b', 'N', "execute", &execute_allowed },
 	{ 'i', 'T', "wait-timeout", &wait_timeout },
 	{ 'i', 'j', "jobs", &jobs },
@@ -396,17 +397,12 @@ check_tablespace()
 
 	if (tablespace == NULL)
 	{
-		/* nothing to check, but let's see the options */
-		if (moveidx)
-		{
-			ereport(ERROR,
-				(errcode(EINVAL),
-				 errmsg("cannot specify --moveidx (-S) without --tablespace (-s)")));
-		}
+		/* nothing to check */
 		return;
 	}
-
 	/* check if the tablespace exists */
+	elog(DEBUG2, "checking tablespace: %s", tablespace);
+
 	reconnect(ERROR);
 	params[0] = tablespace;
 	res = execute_elevel(
@@ -848,7 +844,7 @@ repack_one_database(const char *orderby, char *errbuf, size_t errsize)
 		StringInfoData	copy_sql;
 		const char *create_table_1;
 		const char *create_table_2;
-		const char *tablespace;
+		const char *dest_tablespace;
 		const char *ckey;
 		int			c = 0;
 		int			dependent_views = 0;
@@ -876,7 +872,7 @@ repack_one_database(const char *orderby, char *errbuf, size_t errsize)
 		table.enable_trigger = getstr(res, i, c++);
 
 		create_table_1 = getstr(res, i, c++);
-		tablespace = getstr(res, i, c++);	/* to be clobbered */
+		dest_tablespace = getstr(res, i, c++);	/* to be clobbered */
 		create_table_2 = getstr(res, i, c++);
 		table.copy_data = getstr(res, i , c++);
 		table.alter_col_storage = getstr(res, i, c++);
@@ -889,7 +885,7 @@ repack_one_database(const char *orderby, char *errbuf, size_t errsize)
 		table.sql_delete = getstr(res, i, c++);
 		table.sql_update = getstr(res, i, c++);
 		table.sql_pop = getstr(res, i, c++);
-		tablespace = getstr(res, i, c++);
+		dest_tablespace = getstr(res, i, c++);
 
 		/* check for views referencing the table */
 		resetStringInfo(&sql);
@@ -930,12 +926,13 @@ repack_one_database(const char *orderby, char *errbuf, size_t errsize)
 		/* Craft CREATE TABLE SQL */
 		resetStringInfo(&sql);
 		appendStringInfoString(&sql, create_table_1);
-		appendStringInfoString(&sql, tablespace);
+		appendStringInfoString(&sql, dest_tablespace);
 		appendStringInfoString(&sql, create_table_2);
 
 		/* Always append WITH NO DATA to CREATE TABLE SQL*/
 		appendStringInfoString(&sql, " WITH NO DATA");
 		table.create_table = sql.data;
+		table.tablespace = dest_tablespace;
 
 		/* Craft Copy SQL */
 		initStringInfo(&copy_sql);
@@ -1258,7 +1255,9 @@ migrate_one_table(migrate_table *table, const char *orderby, char *errbuf, size_
 	resetStringInfo(&sql);
 	/* Use a different create table statement that includes null restrictions and
 	 * defaults. */
-	printfStringInfo(&sql, "SELECT migrate.get_create_table_statement('%s', '%s', 'migrate.table_%u')", schema, table_without_namespace, table->target_oid);
+	printfStringInfo(&sql,
+		"SELECT migrate.get_create_table_statement('%s', '%s', 'migrate.table_%u', '%s')",
+		schema, table_without_namespace, table->target_oid, table->tablespace);
 	res = execute(sql.data, 0, NULL);
 
 	if (PQntuples(res) < 1)
@@ -1329,7 +1328,7 @@ migrate_one_table(migrate_table *table, const char *orderby, char *errbuf, size_
 	elog(DEBUG2, "---- find indexes ----");
 
 	indexparams[0] = utoa(table->target_oid, indexbuffer);
-	indexparams[1] = moveidx ? tablespace : NULL;
+	indexparams[1] = tablespace != NULL ? tablespace : NULL;
 	indexparams[2] = table->target_name;
 
 	/* First, just display a warning message for any invalid indexes
@@ -2846,6 +2845,7 @@ pgut_help(bool details)
 	printf("Options:\n");
 	printf("  -t, --table=TABLE         table to target\n");
 	printf("  -d, --database=DATABASE   database in which the table lives\n");
+	printf("  -s, --tablespace=TBLSPC   move table to a new tablespace\n");
 	printf("  -a, --alter=ALTER         SQL of the alter statement\n");
 	printf("  -N, --execute             whether to run the migration\n");
 	printf("  -j, --jobs=NUM            Use this many parallel jobs for each table\n");

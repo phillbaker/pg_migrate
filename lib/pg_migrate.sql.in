@@ -230,7 +230,7 @@ LANGUAGE sql STABLE STRICT;
 
 -- GET a SQL text to create a table with defaults and not null settings.
 -- new_table_name can include a prefixed schema separated by a period.
-CREATE FUNCTION migrate.get_create_table_statement(target_schema varchar, target_table_name varchar, new_table_name varchar)
+CREATE FUNCTION migrate.get_create_table_statement(target_schema varchar, target_table_name varchar, new_table_name varchar, tablespace varchar)
   RETURNS text AS
 $$
 DECLARE
@@ -302,7 +302,7 @@ BEGIN
         END IF;
     END LOOP;
 
-    table_ddl := table_ddl || ') ' || ' WITH (' || migrate.get_storage_param(target_oid) || ');';
+    table_ddl := table_ddl || ') ' || ' WITH (' || migrate.get_storage_param(target_oid) || ') TABLESPACE ' || tablespace || ';';
     RETURN table_ddl;
 END;
 $$
