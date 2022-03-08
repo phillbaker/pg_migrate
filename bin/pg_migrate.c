@@ -317,7 +317,6 @@ static pgut_option options[] =
 {
 	{ 'l', 't', "table", &table_list },
 	{ 'l', 'a', "alter", &alter_list },
-	{ 'l', 's', "schema", &schema_list },
 	{ 's', 's', "tablespace", &tablespace },
 	{ 'b', 'N', "execute", &execute_allowed },
 	{ 'i', 'T', "wait-timeout", &wait_timeout },
