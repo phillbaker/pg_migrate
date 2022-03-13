@@ -1,0 +1,38 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    strategy:
+      matrix:
+        pg:
+          # - 15
+          - 14
+          - 13
+          - 12
+          - 11
+          - 10
+          - 9.6
+    name: 🐘 PostgreSQL ${{ matrix.pg }}
+    runs-on: ubuntu-latest
+    container: ghcr.io/phillbaker/docker-pgxn-tools:latest
+    env:
+      PROFILE: "-std=c99"
+      TEST_PATH: "./bin"
+    steps:
+      - name: Start PostgreSQL ${{ matrix.pg }}
+        run: pg-start ${{ matrix.pg }}
+      - name: Check out the repo
+        uses: actions/checkout@v2
+      - name: Add local bin to path
+        run: |
+          echo "$GITHUB_WORKSPACE/bin" >> $GITHUB_PATH
+      - name: Set tablespace to pg user
+        run: |
+          mkdir -p /tmp/pg-migrate-tablespace
+          # if running as root, change the owner to postgres user
+          if [ "$(id -u)" = "0" ]; then
+            chown postgres:postgres /tmp/pg-migrate-tablespace
+          fi
+      - name: Test on PostgreSQL ${{ matrix.pg }}
+        run: pg-build-test
+  
