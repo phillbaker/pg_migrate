@@ -286,8 +286,6 @@ static bool sqlstate_equals(PGresult *res, const char *state)
 }
 
 static bool				analyze = true;
-static bool				alldb = false;
-static bool				noorder = false;
 static SimpleStringList	parent_table_list = {NULL, NULL};
 static SimpleStringList	alter_list = {NULL, NULL};
 static SimpleStringList	table_list = {NULL, NULL};
@@ -295,7 +293,6 @@ static SimpleStringList	schema_list = {NULL, NULL};
 static char				*orderby = NULL;
 static char				*tablespace = NULL;
 static SimpleStringList	r_index = {NULL, NULL};
-static bool				only_indexes = false;
 static int				wait_timeout = 60;	/* in seconds */
 static int				jobs = 0;	/* number of concurrent worker conns. */
 static bool				execute_allowed = false;
@@ -1229,6 +1226,9 @@ migrate_one_table(migrate_table *table, const char *orderby, char *errbuf, size_
 	const char	   *create_table;
 	char		    indexbuffer[12];
 	int             j;
+	char           *tmp_target_name = NULL;
+	char           *schema = NULL;
+	char           *table_without_namespace = NULL;
 	migrate_foreign_key *foreign_keys;
 
 	/* appname will be "pg_migrate" in normal use on 9.0+, or
@@ -1246,10 +1246,9 @@ migrate_one_table(migrate_table *table, const char *orderby, char *errbuf, size_
 
 	initStringInfo(&sql);
 
-	char *tmp_target_name = NULL;
 	tmp_target_name = strdup(table->target_name);
-	char *schema = strtok(tmp_target_name, ".");
-	char *table_without_namespace = strtok(NULL, ".");
+	schema = strtok(tmp_target_name, ".");
+	table_without_namespace = strtok(NULL, ".");
 
 	resetStringInfo(&sql);
 	/* Use a different create table statement that includes null restrictions and
@@ -1695,13 +1694,14 @@ migrate_one_table(migrate_table *table, const char *orderby, char *errbuf, size_
     int primary_key = PQntuples(res);
 
     if (primary_key > 0) {
+	    IndexDef		stmt;
+
 	    original_primary_key_def = getstr(res, 0, 0);
 	    original_primary_key_name = getstr(res, 0, 1);
 	    CLEARPGRES(res);
 	    elog(DEBUG2, "original_primary_key_def  :  %s", original_primary_key_def);
 	    elog(DEBUG2, "original_primary_key_name  :  %s", original_primary_key_name);
 
-		IndexDef		stmt;
 		parse_indexdef(&stmt, strdup(original_primary_key_def), original_primary_key_name, table->target_name);
 		/* iterate through indexes and see which one
 		 * matches the original_primary_key_def */
@@ -2096,8 +2096,6 @@ static bool
 apply_alter_statement(PGconn *conn, Oid relid, const char *alter_sql)
 {
 	StringInfoData	sql;
-	time_t			start = time(NULL);
-	int				i;
 	bool			ret = true;
 	PGresult   *res;
 
@@ -2264,12 +2262,15 @@ lock_exclusive(PGconn *conn, const char *relid, const char *lock_query, bool sta
 static int
 strpos(char *hay, char *needle)
 {
-   char haystack[strlen(hay)];
-   strncpy(haystack, hay, strlen(hay));
-   char *p = strstr(haystack, needle);
-   if (p)
-      return p - haystack;
-   return -1;
+	char *haystack = NULL;
+	char *p;
+
+	haystack = malloc(strlen(hay));
+   	strncpy(haystack, hay, strlen(hay));
+   	p = strstr(haystack, needle);
+   	if (p)
+    	return p - haystack;
+   	return -1;
 }
 
 // TODO import lib/migrate.h instead of duplicating these here, had a linker error
