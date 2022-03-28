@@ -3,14 +3,9 @@
    "abstract": "Migrates a PostgreSQL table avoiding long locks",
    "description": "Reorganize tables in PostgreSQL databases with minimal locks",
    "version": "0.1.0",
-   "maintainer": [
-       "Beena Emerson <memissemerson@gmail.com>",
-       "Josh Kupershmidt <schmiddy@gmail.com>",
-       "Masahiko Sawada <sawada.mshk@gmail.com>",
-       "Daniele Varrazzo <daniele.varrazzo@gmail.com>"
-    ],
-   "tags": [ "bloat", "maintenance", "vacuum", "cluster" ],
-   "release_status": "stable",
+   "maintainer": [],
+   "tags": [ "maintenance", "locks", "migrations", "schema-change" ],
+   "release_status": "unstable",
    "license": "bsd",
    "provides": {
       "pg_migrate": {
@@ -22,18 +17,18 @@
    "prereqs": {
       "runtime": {
          "requires": {
-            "PostgreSQL": "9.4.0"
+            "PostgreSQL": "9.6.0"
          }
       }
    },
    "resources": {
-      "homepage": "",
+      "homepage": "https://github.com/phillbaker/pg_migrate",
       "bugtracker": {
-         "web": ""
+         "web": "https://github.com/phillbaker/pg_migrate/issues"
       },
       "repository": {
-          "url": "",
-          "web": "",
+          "url": "https://github.com/phillbaker/pg_migrate.git",
+          "web": "https://github.com/phillbaker/pg_migrate",
           "type": "git"
       }
    },
