@@ -126,7 +126,7 @@ jobs:
       - name: Upload deb
         uses: actions/upload-artifact@v3
         with:
-            name: deb-${{ github.ref }}
+            name: deb-${{ github.ref_name }}
             path: deb/*.deb
   package_release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
@@ -140,7 +140,7 @@ jobs:
       - name: Pull
         uses: actions/download-artifact@v3
         with:
-          name: deb-${{ github.ref }}
+          name: deb-${{ github.ref_name }}
           path: deb
       - name: Install apt tools
         run: |
