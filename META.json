@@ -2,7 +2,7 @@
    "name": "pg_migrate",
    "abstract": "Migrates a PostgreSQL table avoiding long locks",
    "description": "Reorganize tables in PostgreSQL databases with minimal locks",
-   "version": "0.1.0",
+   "version": "0.1.1",
    "maintainer": [],
    "tags": [ "maintenance", "locks", "migrations", "schema-change" ],
    "release_status": "unstable",
@@ -10,7 +10,7 @@
    "provides": {
       "pg_migrate": {
          "file": "lib/pg_migrate.sql",
-         "version": "0.1.0",
+         "version": "0.1.1",
          "abstract": "Migrates a PostgreSQL table avoiding long locks"
       }
    },
