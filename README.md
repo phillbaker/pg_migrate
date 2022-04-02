@@ -24,7 +24,7 @@ Postgres >= 9.6
 
 ## Installation
 
-### Linux
+### Ubuntu/Debian
 
 Use `apt-get` to install the package matching the Postgres version (`postgresql-<version>-pg_migrate`) being run from [this repo's APT repository](https://github.com/phillbaker/pg_migrate/releases/tag/apt-release-amd64).
 
@@ -42,6 +42,16 @@ apt-get install -y postgresql-10-pg_migrate
 Load the pg_migrate Postgres extension in the database you want to work on:
 ```
 psql -c "DROP EXTENSION IF EXISTS pg_migrate cascade; CREATE EXTENSION pg_migrate" -d postgres
+```
+
+### Mac
+
+Use `homebrew` to install the package matching the Postgres version being used.
+
+```
+brew tap phillbaker/pg_migrate https://github.com/phillbaker/pg_migrate
+brew install pg_migrate_postgresql@10
+# follow the post install instructions if you're running postgres on your local machine
 ```
 
 ## Examples
