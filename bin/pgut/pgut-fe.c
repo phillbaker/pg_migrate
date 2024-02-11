@@ -16,6 +16,11 @@
 #include <getopt_long.h>
 #endif
 
+#ifndef WIN32
+#include <sys/types.h>
+#include <pwd.h>
+#endif
+
 char	   *dbname = NULL;
 char	   *host = NULL;
 char	   *port = NULL;
